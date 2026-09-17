@@ -1,10 +1,9 @@
 ---
-
 name: plan-to-backlog
 description: Convert an approved implementation plan into a small set of atomic Backlog.md tasks with explicit file scope, acceptance criteria, dependencies, and deterministic verification checks. Use after a plan has been reviewed and approved. Do not implement the tasks.
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+---
 
-# Plan to Backlog
+# Plan to backlog
 
 Convert an already-approved implementation plan into executable Backlog.md tasks.
 
@@ -61,7 +60,7 @@ backlog task create "Title" \
 backlog task edit <id> --dep task-1 --dep task-2
 ```
 
-Use `backlog task ... --json` or `--plain` when inspecting existing tasks.
+Use `backlog task <id> --json` for the installed Backlog 1.52.0 task-view JSON schema. Use `--plain` only for human-readable inspection.
 
 ## Task decomposition
 
@@ -109,7 +108,7 @@ Include every file that the task is expected to modify.
 
 Do not include files merely because they are useful references.
 
-Use repository-relative paths.
+Use repository-relative paths. Exact files, recursive directory scopes ending in `/`, and picomatch globs are supported. Quote glob arguments so the shell passes the pattern unchanged, for example `--modified-file 'src/parser/**/*.ts'`. Patterns authorize future matching files, including dotfiles. Never use absolute paths or `..` traversal.
 
 Prefer precise file paths:
 
@@ -131,7 +130,7 @@ Do not include unrelated files "just in case."
 
 ### New files
 
-If a task is expected to create a new file, include its planned path in `modified_files`.
+If a task is expected to create a new file, include its planned path with `--modified-file` so it appears in the JSON `modifiedFiles` field.
 
 ### Generated files
 

@@ -1,0 +1,27 @@
+{
+  "name": "pi-control",
+  "version": "0.1.0",
+  "description": "Task scope and deterministic verification for Pi and Backlog.md",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "files": ["src", "skills", "README.md"],
+  "pi": {"extensions": ["./src/index.ts"], "skills": ["./skills"]},
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {"picomatch": "^4.0.3"},
+  "peerDependencies": {"@earendil-works/pi-coding-agent": "*"},
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@types/node": "^22.0.0",
+    "@types/picomatch": "^4.0.0",
+    "typescript": "^5.9.3",
+    "tsx": "^4.20.0",
+    "eslint": "^9.0.0",
+    "typescript-eslint": "^8.0.0"
+  },
+  "engines": {"node": ">=22"}
+}

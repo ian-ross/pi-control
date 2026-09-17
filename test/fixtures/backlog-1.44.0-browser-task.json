@@ -1,0 +1,52 @@
+{
+  "id": "TASK-2",
+  "title": "Implement fixture behavior",
+  "status": "To Do",
+  "assignee": [],
+  "createdDate": "2026-09-17 09:39",
+  "labels": [
+    "alpha",
+    "beta"
+  ],
+  "dependencies": [
+    "TASK-1"
+  ],
+  "references": [
+    "src/example.ts"
+  ],
+  "documentation": [
+    "docs/example.md"
+  ],
+  "rawContent": "## Description\n\n<!-- SECTION:DESCRIPTION:BEGIN -->\nPurpose line\nSecond line with safe fixture content.\n<!-- SECTION:DESCRIPTION:END -->\n\n## Acceptance Criteria\n<!-- AC:BEGIN -->\n- [ ] #1 First observable criterion\n- [ ] #2 Second observable criterion\n<!-- AC:END -->\n\n## Implementation Plan\n\n<!-- SECTION:PLAN:BEGIN -->\n1. Do one thing.\n2. Run checks.\n<!-- SECTION:PLAN:END -->\n\n## Implementation Notes\n\n<!-- SECTION:NOTES:BEGIN -->\nNote text\n<!-- SECTION:NOTES:END -->\n\n## Definition of Done\n<!-- DOD:BEGIN -->\n- [ ] #1 Verification: npm test -- --runInBand\n- [ ] #2 Verification: npm run lint\n<!-- DOD:END -->",
+  "acceptanceCriteriaItems": [
+    {
+      "checked": false,
+      "text": "First observable criterion",
+      "index": 1
+    },
+    {
+      "checked": false,
+      "text": "Second observable criterion",
+      "index": 2
+    }
+  ],
+  "definitionOfDoneItems": [
+    {
+      "checked": false,
+      "text": "Verification: npm test -- --runInBand",
+      "index": 1
+    },
+    {
+      "checked": false,
+      "text": "Verification: npm run lint",
+      "index": 2
+    }
+  ],
+  "description": "Purpose line\nSecond line with safe fixture content.",
+  "implementationPlan": "1. Do one thing.\n2. Run checks.",
+  "implementationNotes": "Note text",
+  "priority": "high",
+  "filePath": "<TEMP_BACKLOG_REPO>/backlog/tasks/task-2 - Implement-fixture-behavior.md",
+  "lastModified": "<ISO_TIMESTAMP>",
+  "source": "local"
+}

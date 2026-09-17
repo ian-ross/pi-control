@@ -1,0 +1,12 @@
+{
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "File: <TEMP_BACKLOG_REPO>/backlog/tasks/task-2 - Implement-fixture-behavior.md\n\nTask TASK-2 - Implement fixture behavior\n==================================================\n\nStatus: ○ To Do\nPriority: High\nCreated: 2026-09-17 09:39\nLabels: alpha, beta\nDependencies: TASK-1\nReferences: src/example.ts\nDocumentation: docs/example.md\n\nDescription:\n--------------------------------------------------\nPurpose line\nSecond line with safe fixture content.\n\nAcceptance Criteria:\n--------------------------------------------------\n- [ ] #1 First observable criterion\n- [ ] #2 Second observable criterion\n\nDefinition of Done:\n--------------------------------------------------\n- [ ] #1 Verification: npm test -- --runInBand\n- [ ] #2 Verification: npm run lint\n\nImplementation Plan:\n--------------------------------------------------\n1. Do one thing.\n2. Run checks.\n\nImplementation Notes:\n--------------------------------------------------\nNote text\n"
+      }
+    ]
+  },
+  "jsonrpc": "2.0",
+  "id": 2
+}

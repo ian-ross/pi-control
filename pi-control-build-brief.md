@@ -79,7 +79,7 @@ Code review remains the responsibility of existing review tools and the user. Ge
 - each implementation task to have explicit `modifiedFiles` entries containing file paths, directory scopes, or glob patterns;
 - deterministic Definition of Done entries whose text begins exactly with `Verification:`;
 - Plannotator configured with `"executionMode": "external"` when automatic plan handoff is wanted;
-- skill commands enabled in Pi when automatic invocation of `/skill:plan-to-backlog` is wanted.
+- the `plan-to-backlog` skill installed and loaded in Pi when automatic invocation of `/skill:plan-to-backlog` is wanted. Skill availability is sufficient; the extension need not inspect `enableSkillCommands`.
 
 The extension must fail with a concise diagnostic when a prerequisite is absent. It must not invent missing scope or verification checks.
 
@@ -455,7 +455,7 @@ Required behavior:
 5. Include the approved plan path and approval feedback. Include `planContent` directly when practical so the approved event payload remains authoritative, while avoiding duplicate huge content if the file is verified to contain the same text.
 6. Choose a safe delivery mode if the agent is still streaming; queue a follow-up rather than interrupting approval handling.
 7. Do not start `/implement` automatically after task generation.
-8. If the skill is unavailable or skill commands are disabled, show an actionable error and preserve the plan information; do not fall back to ad hoc task generation.
+8. If the skill is unavailable, show an actionable error and preserve the plan information; do not fall back to ad hoc task generation. Check for the loaded `skill:plan-to-backlog` command with Pi's public API. Do not require a separate check of `enableSkillCommands`.
 
 The Plannotator integration must be isolated behind a small adapter and have tests using emitted fake events. `pi-control` must still load and provide its commands when Plannotator is absent.
 

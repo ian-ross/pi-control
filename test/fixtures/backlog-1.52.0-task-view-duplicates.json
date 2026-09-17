@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "kind": "task-view",
+  "task": {
+    "id": "BACK-4",
+    "title": "Duplicates",
+    "status": "To Do",
+    "type": null,
+    "priority": null,
+    "project": null,
+    "assignees": [],
+    "reporter": null,
+    "labels": [],
+    "milestone": null,
+    "parentTaskId": null,
+    "acceptanceCriteriaCompleted": 0,
+    "acceptanceCriteriaCount": 0,
+    "references": [],
+    "modifiedFiles": [
+      "src/a.ts",
+      "src/A.ts"
+    ],
+    "ordinal": 4000,
+    "createdAt": "2026-09-17T09:56:00Z",
+    "updatedAt": null,
+    "dueDate": null,
+    "isReady": true,
+    "path": "backlog/tasks/back-4 - Duplicates.md",
+    "description": null,
+    "dependencies": [],
+    "dependencyGraph": {
+      "root": "BACK-4",
+      "nodes": [
+        {
+          "id": "BACK-4",
+          "title": "Duplicates",
+          "status": "To Do",
+          "state": "resolved",
+          "completed": false,
+          "dependencyDepth": 0,
+          "dependentDepth": 0
+        }
+      ],
+      "edges": []
+    },
+    "readiness": {
+      "isReady": true,
+      "isBlocked": false,
+      "blockingDependencies": [],
+      "missingDependencies": []
+    },
+    "documentation": [],
+    "subtasks": [],
+    "acceptanceCriteria": [],
+    "definitionOfDone": [
+      {
+        "index": 1,
+        "text": "Verification: npm test",
+        "checked": false
+      },
+      {
+        "index": 2,
+        "text": "Verification: npm test",
+        "checked": false
+      },
+      {
+        "index": 3,
+        "text": "Verification: npm run lint",
+        "checked": false
+      }
+    ],
+    "implementationPlan": null,
+    "implementationNotes": null,
+    "comments": [],
+    "finalSummary": null
+  }
+}
