@@ -298,6 +298,7 @@ function buildPlanToBacklogPrompt(event: PlannotatorPlanApprovedEvent, safePath:
 	return [
 		`${slashSkillCommand()} Create Backlog.md tasks from the approved Plannotator plan.`,
 		"",
+		"The plan has been approved. Repository task-management instructions now apply only for Backlog task generation, and the approved-plan handoff is the reason this workflow is allowed to mutate Backlog.",
 		"Do not implement the plan. Do not start /implement. Do not edit code for the plan. Only create or update Backlog tasks according to the plan-to-backlog skill.",
 		"Every created or updated implementation task must have a non-empty implementationPlan stored in Backlog. Write it with backlog task edit <id> --plan, then read backlog task <id> --json and verify task.implementationPlan before reporting completion. Include task-local steps, relevant files and symbols, constraints, and test cases. A description or a link to the parent plan is not a substitute. Keep new tasks in their initial status; do not mark them In Progress to attach a plan.",
 		"",

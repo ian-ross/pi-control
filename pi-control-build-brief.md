@@ -33,8 +33,10 @@ approved Plannotator plan
         -> /implement one task
         -> deterministic scope and command verification
         -> bounded repair loop
-        -> external/manual review
-        -> /commit
+        -> read-only acceptance review
+        -> /commit with assessment and final summary confirmation
+        -> implementation commit
+        -> Backlog finalization and narrow metadata commit
 ```
 
 The extension must enforce the parts that should not depend on model obedience:
@@ -53,21 +55,20 @@ The implementing agent proposes code changes. The extension owns workflow state 
 
 Do not add any of the following in the first version:
 
-- an LLM-as-judge verifier;
-- semantic code review;
+- model overrides of mechanical verification;
+- general semantic code review beyond the task's acceptance criteria;
 - subagents, swarms, or parallel task execution;
 - autonomous task decomposition;
 - worktree management;
-- automatic commits;
+- commits without explicit user confirmation;
 - automatic pushes, merges, rebases, or tags;
-- automatic closure of Backlog tasks;
 - a new task database or a replacement for Backlog.md;
 - a generic shell permission system;
 - a custom planning UI;
 - a broad coding-style doctrine;
-- a requirement that the agent format free-form evidence in a special schema.
+- free-form implementation-agent claims as a substitute for checks.
 
-Code review remains the responsibility of existing review tools and the user. General shell and Git permissions may be supplied by another Pi permission extension. Document the recommended permission rules, but do not grow `pi-control` into a shell parser.
+General code review remains the responsibility of existing review tools and the user. A separate read-only model review assesses the task's acceptance criteria after mechanical verification. It cannot change the mechanical result. General shell and Git permissions may be supplied by another Pi permission extension. Document the recommended permission rules, but do not grow `pi-control` into a shell parser.
 
 ## External assumptions
 
@@ -126,7 +127,7 @@ Scope entry semantics:
 - Reject absolute entries, traversal through `..`, patterns that cannot compile, and any entry that would authorize paths outside the repository.
 - Preserve the user's scope entry text for display, but store a canonical compiled representation for checks.
 
-Do not interpret ordinary acceptance criteria as executable checks. Do not execute Definition of Done text without the exact `Verification:` prefix.
+Preserve acceptance criterion identifiers, text, and checkbox state from CLI JSON. Assess each criterion separately as satisfied, unsatisfied, or uncertain, with evidence. Existing human checkmarks remain intact but do not replace the assessment. Do not interpret acceptance criteria as executable checks. Do not execute Definition of Done text without the exact `Verification:` prefix.
 
 ## Commands
 
@@ -175,8 +176,9 @@ Run scope checks and all configured verification commands without prompting the 
 
 - Default to the active task when the ID is omitted.
 - Reject a mismatched task ID while another run is active.
-- Print a compact per-check result and a final status.
+- Print a compact per-check result and a final mechanical status.
 - Persist the result and its digest.
+- After success, request a separate read-only acceptance-review turn. Its assessment must pass before commit.
 - A manual verification failure must not start an automatic repair loop.
 
 Example presentation:
@@ -204,7 +206,8 @@ Rules:
 - store the reason, timestamp, failed commands, and digest;
 - report the state as `WAIVED`, never as `VERIFIED`;
 - become `STALE` after any relevant repository change;
-- never waive an out-of-scope change, a changed `HEAD`, an invalid baseline, or malformed task data.
+- never waive an out-of-scope change, a changed `HEAD`, an invalid baseline, malformed task data, or acceptance criteria;
+- request a separate acceptance review after recording the command waiver.
 
 If scope fails, the user must restore the offending change or explicitly add the path with `/scope-add`.
 
@@ -246,7 +249,7 @@ End the active workflow without reverting files.
 
 ### `/commit <task-id> [message]`
 
-Create an explicit task commit. This is the only Git mutation that `pi-control` itself should perform.
+Create an implementation commit, then finalize the task through the Backlog CLI and create a second commit limited to that task file. Both commits require the user's approval of the assessment, summary, paths, and metadata policy.
 
 Rules:
 
@@ -256,14 +259,17 @@ Rules:
 4. Recheck `HEAD`, scope, and baseline invariants.
 5. Determine the paths actually changed by this run; do not stage every path merely matched by the allowed scope.
 6. Refuse if anything is staged outside the task-changed paths authorized by effective scope or the exact controller-owned claim fingerprint.
-7. Stage those changed paths, including deletions and the controller-owned task file, with argument-safe process invocation rather than interpolated shell text. Identify the claim file in confirmation and warn if it was already uncommitted at baseline.
+7. Stage changed implementation paths, including deletions, with argument-safe process invocation rather than interpolated shell text. Leave the controller-owned task file for the separate metadata commit. Identify it in confirmation and warn if it was already uncommitted at baseline.
 8. Recheck the staged path set before committing.
 9. Use the supplied message, or a deterministic default such as `<task-id>: <task title>`.
 10. Show the task ID, status, paths, and message and require interactive confirmation.
 11. Run the commit through `pi.exec`, not by asking the model to call Bash.
 12. If Git or a hook fails, report the exact failure and leave the run recoverable.
-13. On success, persist `COMMITTED` and the resulting commit SHA.
-14. Do not push, merge, rebase, tag, or mark the Backlog task Done.
+13. On implementation commit success, persist its SHA and a retryable finalization state before changing Backlog. A failed implementation commit must never close the task.
+14. Through the Backlog CLI, check satisfied criteria, write the confirmed final summary, and move the task to the captured terminal status. Preserve existing human checkmarks. Never write automated checkmarks before commit, so stale assessments need no checkbox rollback.
+15. Accept only the intended changes to the active task file, validate CLI readback, and commit that file separately with the same hook and index protections. Other Backlog files receive no exemption.
+16. Persist failures and allow explicit retry without creating another implementation commit. Restore pending finalization without starting it automatically. Record both commit SHAs on success.
+17. Do not push, merge, rebase, or tag.
 
 A `WAIVED` commit must use a visibly stronger confirmation that includes the waiver reason.
 
@@ -286,7 +292,8 @@ During the run:
 - pre-existing outside-scope dirty paths must remain byte-for-byte and metadata-equivalent to their recorded baseline state, except the exact controller-owned Backlog claim file described below;
 - any newly changed path must be within the effective allowed scope or match the exact controller-owned claim fingerprint;
 - any other outside-scope baseline path changed after the run starts is an out-of-scope change;
-- ignored files are outside version 1's scope accounting unless they become Git-visible;
+- ignored, untracked files remain outside scope accounting;
+- matching disposable untracked artifacts may be excluded under the frozen policy described below, but tracked and staged files receive no artifact exemption;
 - path handling must be NUL-safe and must correctly support spaces, tabs, Unicode, and leading dashes.
 
 Implement this with structured Git process calls and explicit path fingerprints. Do not parse human-formatted `git status` output. Avoid shell interpolation.
@@ -342,13 +349,27 @@ Compare the current repository state with the captured baseline and compute the 
 The hard invariant is:
 
 ```text
-every path changed since run baseline must match the effective allowed scope
-or be the controller-owned task file with its exact recorded claim fingerprint
+every non-artifact path changed since run baseline must match the effective allowed scope
+or be the controller-owned task file with its exact recorded fingerprint
 ```
 
 In addition, pre-existing outside-scope dirty paths other than that exact claim file must still match their baseline fingerprints. Here, "matches the effective allowed scope" means the canonical repository-relative path is covered by at least one exact file entry, directory scope, or glob pattern.
 
 Return all offending paths in one result. Do not fail after the first path and force a repeated discovery loop.
+
+## Disposable untracked artifacts
+
+Support `untrackedArtifacts`, defaulting to an empty list, in user-global configuration and trusted project configuration. Project lists replace global lists, including an explicit empty list. Use the existing path and glob safety rules. Freeze the effective policy in persisted run state; reloads and resume must not adopt a weaker policy.
+
+Exclude only matching untracked, unstaged regular files from scope violations, content digests, and verification-mutation checks. Never automatically stage them, even when task scope also matches. Tracked or staged files still require normal authorization. Reject unsafe patterns and symlink escapes. Generated files intended for commit need explicit task scope and must not qualify for the disposable-file exemption. Git ignore rules are the simpler alternative for caches that the whole project should ignore.
+
+## Acceptance review and finalization
+
+Run a separate read-only review after mechanical verification. Supply the checked task definition, code evidence, and command results. Validate every criterion ID, assessment, and non-empty evidence field. Malformed, unsatisfied, and uncertain results block completion. A model assessment must never convert a failed mechanical check into a pass. A human command waiver does not waive acceptance review.
+
+Bind the assessment and proposed final summary to the task definition and verified code digest. Invalidate them after either changes. Show the assessment, evidence, proposed summary, and any known waived failures during commit confirmation.
+
+Use the separate metadata-commit policy described under `/commit`. Backlog auto-commit stays disabled. Freeze the terminal status for each run. Restrict controller-owned metadata handling to the exact active task file and intended criterion, summary, timestamp, and status changes. Never exempt the `backlog/` directory.
 
 ## Deterministic verification
 
@@ -386,9 +407,13 @@ Compute a stable SHA-256 digest over canonical structured data containing at lea
 - repository identity/root;
 - captured baseline `HEAD`;
 - task ID;
+
+Bind acceptance review separately to the full normalized task definition, including criterion identifiers and checkbox state, as well as the verification digest. The mechanical digest also includes:
+
 - effective allowed scope entries;
 - verification commands;
-- the set of paths changed during the run;
+- the frozen untracked-artifact policy;
+- the set of non-artifact paths changed during the run;
 - their current content/type/mode/symlink fingerprints relative to the baseline.
 
 The digest should represent the task's content state, not incidental staging of identical content, so staging performed by `/commit` does not itself make verification stale. Index invariants still need separate checking.
@@ -412,6 +437,7 @@ type RunPhase =
   | "VERIFIED"
   | "WAIVED"
   | "STALE"
+  | "FINALIZING"
   | "COMMITTED"
   | "ABORTED";
 ```
@@ -439,6 +465,10 @@ After the final failed attempt:
 - retain the exact final failures.
 
 ## Plannotator handoff
+
+Ship explicit planning-phase instructions and a documented Plannotator configuration. During planning, inspect the repository, clarify requirements, write only the planning document, and submit it for approval. Do not create or update Backlog tasks or implement code. Repository task-management instructions, including `AGENTS.md`, apply after approval. The approved-plan handoff remains responsible for invoking task generation. These are prompt instructions, not a shell sandbox.
+
+Test the explicit prohibitions and exercise planning with Backlog instructions present. Confirm no task writes before approval and task generation afterward. Record whether this was a live-model session or a simulated integration test.
 
 Listen on Pi's shared event bus for the plain string event:
 
@@ -483,7 +513,9 @@ Persist after every meaningful transition, including:
 - waiver;
 - stale transition;
 - abort;
-- commit.
+- acceptance review and invalidation;
+- implementation commit;
+- each finalization step, failure, and metadata commit.
 
 Use a versioned serialized schema, for example:
 
@@ -528,7 +560,7 @@ Avoid runtime dependencies unless they clearly reduce risk. In particular, do no
 
 ## Configuration
 
-Provide a small documented configuration surface with conservative defaults. Project-local configuration is preferable where Pi conventions support it.
+Provide a small documented configuration surface with conservative defaults. Load user-global settings from Pi's agent directory and project settings only from trusted projects. Project values replace global values, including artifact lists.
 
 At minimum support:
 
@@ -541,6 +573,8 @@ interface PiControlConfig {
   claimAssignee: string;           // default "@pi-control"
   readyStatus: string;             // default "To Do"
   inProgressStatus: string;        // default "In Progress"
+  terminalStatus: string;          // default "Done", captured per run
+  untrackedArtifacts: string[];    // default [], project replaces global
 }
 ```
 
@@ -667,10 +701,11 @@ At minimum cover:
 - rejected when failed or stale;
 - rejected for mismatched task;
 - rejected for staged outside-scope content;
-- stages only changed implementation paths within effective scope and the exact controller-owned claim file, including implementation deletions;
+- stages only changed implementation paths within effective scope, including deletions, for the first commit, then only the exact controller-owned task file for the metadata commit;
 - safe handling of unusual filenames and commit messages;
 - hook/commit failure leaves recoverable state;
-- successful commit records SHA and does not push or close the task;
+- successful implementation commit records its SHA before task closure, then finalization records a separate metadata commit SHA;
+- finalization failure, retry, restoration, unexpected file changes, and metadata hook failure never repeat the implementation commit;
 - waived commit displays and confirms the waiver reason.
 
 ### Plannotator integration
@@ -712,13 +747,13 @@ The implementation is complete only when all of the following are true:
 1. A Plannotator approval can deterministically trigger the `plan-to-backlog` skill without starting implementation.
 2. `/implement TASK` loads the task from Backlog JSON, records a reliable baseline, enforces direct edit/write scope, prompts the agent once, and begins the bounded verify/repair loop.
 3. Actual Git-visible changes are checked against the baseline at verification time, including shell-created changes.
-4. Verification is purely mechanical: scope invariants and command exit statuses.
+4. Verification is purely mechanical, based on scope invariants and command exit statuses. Separate acceptance review cannot override these results.
 5. The automatic loop stops after the configured number of repair attempts and cannot enter an unbounded verifier loop.
 6. `/verify` runs independently without prompting a repair.
 7. `/verify-waive` records a reason, cannot waive scope failure, and is distinct from success.
 8. `/scope-add` requires an explicit human action for any new scope entry and invalidates prior verification.
 9. Any relevant change after verification makes the result stale.
-10. `/commit` requires a current verified or waived state, stages only task changes, requires confirmation, and performs no push or task closure.
+10. `/commit` requires current verification or an explicit command waiver plus a current satisfied acceptance assessment. It confirms the proposed summary and waived failures, commits only task changes, then finalizes Backlog through a separate task-file-only metadata commit. Failed finalization is retryable without repeating implementation commits. It never pushes.
 11. State survives Pi session restoration without spontaneously resuming agent work.
 12. The extension remains usable without Plannotator installed.
 13. Tests cover the hard invariants and failure paths listed above.

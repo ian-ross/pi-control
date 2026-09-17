@@ -13,6 +13,13 @@ export interface TaskLifecycle {
   assignees: string[];
 }
 
+export interface AcceptanceCriterion {
+  id: string;
+  index: number;
+  text: string;
+  checked: boolean;
+}
+
 export interface ControlTask {
   id: string;
   title: string;
@@ -22,6 +29,8 @@ export interface ControlTask {
   // Only legacy restored runs may omit this field; new task loads require it.
   lifecycle?: TaskLifecycle;
   acceptanceCriteria: string[];
+  acceptanceCriteriaState?: AcceptanceCriterion[];
+  finalSummary?: string;
   allowedScope: string[];
   verificationCommands: string[];
 }
@@ -163,12 +172,23 @@ function dedupePreservingOrder(values: string[], keyOf: (value: string) => strin
   return result;
 }
 
-function extractAcceptanceCriteria(task: UnknownRecord): string[] {
+function extractAcceptanceCriteriaState(task: UnknownRecord): AcceptanceCriterion[] {
+  const ids = new Set<string>(), indexes = new Set<number>();
   return listObjects(task.acceptanceCriteria, "acceptanceCriteria").map((item, index) => {
     if (typeof item.text !== "string") {
       throw taskError(`Backlog task acceptanceCriteria[${index}].text must be a string.`);
     }
-    return item.text;
+    if (!Number.isSafeInteger(item.index) || (item.index as number) <= 0) {
+      throw taskError(`Backlog task acceptanceCriteria[${index}].index must be a positive integer.`);
+    }
+    if (typeof item.checked !== "boolean") {
+      throw taskError(`Backlog task acceptanceCriteria[${index}].checked must be a boolean.`);
+    }
+    if (item.id !== undefined && (typeof item.id !== 'string' || !item.id.trim() || CONTROL_CHARS.test(item.id))) throw taskError(`Backlog task acceptanceCriteria[${index}].id must be a non-empty identifier.`);
+    const id = item.id === undefined ? String(item.index) : item.id as string;
+    if (ids.has(id) || indexes.has(item.index as number)) throw taskError('Backlog acceptance criteria must have unique identifiers and indexes.');
+    ids.add(id); indexes.add(item.index as number);
+    return { id, index: item.index as number, text: item.text, checked: item.checked };
   });
 }
 
@@ -238,6 +258,13 @@ function normalizeTaskPath(value: unknown): string {
   return path;
 }
 
+export function ensureAcceptanceCriteriaState(task: ControlTask): ControlTask {
+  if (!task.acceptanceCriteriaState) {
+    task.acceptanceCriteriaState = task.acceptanceCriteria.map((text, index) => ({ id: String(index + 1), index: index + 1, text, checked: false }));
+  }
+  return task;
+}
+
 export function normalizeTask(raw: unknown): ControlTask {
   const envelope = parseRawTask(raw);
   if (!isRecord(envelope)) {
@@ -255,11 +282,15 @@ export function normalizeTask(raw: unknown): ControlTask {
 
   const sourceTask = envelope.task;
   const description = optionalDescription(sourceTask.description);
+  const finalSummary = optionalDescription(sourceTask.finalSummary);
+  const acceptanceCriteriaState = extractAcceptanceCriteriaState(sourceTask);
   const task: ControlTask = {
+    ...(finalSummary !== undefined ? { finalSummary } : {}),
     id: requireString(sourceTask.id, "id"),
     title: requireString(sourceTask.title, "title"),
     lifecycle: extractLifecycle(sourceTask),
-    acceptanceCriteria: extractAcceptanceCriteria(sourceTask),
+    acceptanceCriteria: acceptanceCriteriaState.map(item => item.text),
+    acceptanceCriteriaState,
     allowedScope: extractAllowedScope(sourceTask),
     verificationCommands: extractVerificationCommands(sourceTask),
   };
@@ -268,7 +299,7 @@ export function normalizeTask(raw: unknown): ControlTask {
     throw taskError('Backlog task must include a non-empty implementationPlan. Add it with `backlog task edit <id> --plan <text>` before /implement.');
   }
   task.implementationPlan = sourceTask.implementationPlan;
-  return task;
+  return ensureAcceptanceCriteriaState(task);
 }
 
 export async function requireAutoCommitDisabled(root: string, exec: BacklogExec): Promise<void> {
@@ -313,6 +344,7 @@ export function assertClaimable(task: ControlTask, settings: ClaimSettings): Tas
 }
 
 export async function claimTask(root: string, task: ControlTask, settings: ClaimSettings, exec: BacklogExec): Promise<ControlTask> {
+  task = ensureAcceptanceCriteriaState(task);
   const claim = normalizeClaimSettings(settings);
   if (process.env.BACKLOG_CWD && await realpath(resolve(root, process.env.BACKLOG_CWD)) !== await realpath(root)) {
     throw new BacklogTaskError('backlog-config', 'BACKLOG_CWD does not match the captured project root. Unset it or point it at this repository before claiming a task.');

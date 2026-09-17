@@ -1,6 +1,6 @@
 # pi-control
 
-`pi-control` is a Pi extension for working on one Backlog.md task at a time. It records the task, the allowed file scope, the starting Git state, and the exact verification commands. Then it lets the agent implement, runs mechanical checks, allows a bounded repair loop, and only commits after a current pass or an explicit human waiver.
+`pi-control` is a Pi extension for working on one Backlog.md task at a time. It records the task, the allowed file scope, the starting Git state, and the exact verification commands. Then it lets the agent implement, runs mechanical checks, and allows a bounded repair loop. A separate read-only acceptance review must pass before commit. Commit confirmation covers the assessment, final summary, and any human-waived command failures. After the implementation commit, the controller finalizes the Backlog task in a separate task-file-only commit.
 
 It is not a sandbox. It is a workflow guard and verifier.
 
@@ -24,49 +24,11 @@ and install this extension.
 
 ### Configure Plannotator
 
-Create `.pi/plannotator.json` with the following content:
+Copy [`skills/plannotator.example.json`](skills/plannotator.example.json) to `.pi/plannotator.json`, or merge its `executionMode` and planning phase into your existing configuration. Keep your preferred model and thinking settings. The full prompt is also readable in [`skills/plannotator-planning-instructions.md`](skills/plannotator-planning-instructions.md).
 
-```json
-{
-  "executionMode": "external",
-  "defaults": {
-    "model": { "provider": "openai-codex", "id": "gpt-5.5" },
-    "thinking": "medium",
-    "activeTools": ["read", "bash"],
-    "statusLabel": "Ready",
-    "instructions": "Optional phase-entry message template"
-  },
-  "phases": {
-    "planning": {
-      "model": { "provider": "openai-codex", "id": "gpt-5.5" },
-      "thinking": "high",
-      "activeTools": ["grep", "find", "ls", "plannotator_submit_plan"],
-      "statusLabel": "⏸ plan",
-      "instructions": "[PLANNING]\nPlan file: ${planFilePath}\n\nInterview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.\n\nAsk the questions one at a time.\n\nIf a question can be answered by exploring the codebase, explore the codebase instead.\n\nDo not expand scope beyond request without asking. Respect requests to proceed incrementally: allow me to defer decisions to a later iteration."
-    }
-  }
-}
-```
+The prompt tells the planning agent to inspect the repository, clarify requirements, write only the planning document, and submit it for approval. Before approval it explicitly prohibits creating or updating Backlog tasks, changing task status or checkboxes, and implementing code. Repository task-management instructions in `AGENTS.md` apply after approval. The approved-plan handoff invokes task generation.
 
-For readability and editability, the planning prompt above is:
-
-```
-[PLANNING]
-Plan file: ${planFilePath}
-
-Interview me relentlessly about every aspect of this plan until we reach a
-shared understanding. Walk down each branch of the design tree, resolving
-dependencies between decisions one-by-one. For each question, provide your
-recommended answer.
-
-Ask the questions one at a time.
-
-If a question can be answered by exploring the codebase, explore the codebase
-instead.
-
-Do not expand scope beyond request without asking. Respect requests to proceed
-incrementally: allow me to defer decisions to a later iteration.
-```
+These instructions guide the model. They are not hard shell enforcement. Plannotator controls its planning tools; this extension does not intercept arbitrary Bash commands during planning.
 
 ### Generate rules
 
@@ -86,7 +48,7 @@ Tested against the installed APIs here:
 | Git | 2.55.0 |
 | OS | Linux with `/bin/bash` |
 
-The package requires Node 22+. The implementation and unit tests were built against the installed APIs above. The model-free Pi `/control-status` smoke test also passes. Automated tests use temporary Git repositories and fake Pi adapters; they do not exercise a live model implementation turn.
+The package requires Node 22+. The implementation and unit tests were built against the installed APIs above. The model-free Pi `/control-status` smoke test also passes. Automated tests use temporary Git repositories and fake Pi adapters. A separate live-model planning smoke read conflicting Backlog instructions in `AGENTS.md`, changed only `PLAN.md` before approval, then created a task through the real CLI after approval. That smoke simulated the approval transport rather than opening the Plannotator browser. A Backlog CLI completion smoke also checked criterion updates, terminal status, separate commits, and cache exclusion. It used a deterministic acceptance response, not a live model implementation turn.
 
 Prerequisites:
 
@@ -140,11 +102,9 @@ The extension never changes this setting, commits the configuration change, or a
 
 ### pi-control settings
 
-Project config lives at:
+User-global config lives at `~/.pi/agent/pi-control.json`, or the Pi agent directory selected by `PI_CODING_AGENT_DIR`. Trusted project config lives at `.pi/pi-control.json`.
 
-```text
-.pi/pi-control.json
-```
+Settings merge in this order: defaults, global config, project config. Project values replace global values. Lists do not concatenate, so `"untrackedArtifacts": []` disables inherited artifact exclusions for new runs.
 
 Defaults:
 
@@ -156,7 +116,9 @@ Defaults:
   "autoPlanHandoff": true,
   "claimAssignee": "@pi-control",
   "readyStatus": "To Do",
-  "inProgressStatus": "In Progress"
+  "inProgressStatus": "In Progress",
+  "terminalStatus": "Done",
+  "untrackedArtifacts": []
 }
 ```
 
@@ -167,10 +129,11 @@ Validation:
 - `shell` must be an absolute path without NUL bytes.
 - `autoPlanHandoff` must be boolean.
 - `claimAssignee` names one Backlog assignee. An omitted leading `@` is added. Letters, digits, dots, underscores, and hyphens are accepted.
-- `readyStatus` and `inProgressStatus` must be distinct, non-empty status names without control characters. Use names from your Backlog project.
+- `readyStatus`, `inProgressStatus`, and `terminalStatus` must be distinct, non-empty status names without control characters. Use names from your Backlog project.
+- `untrackedArtifacts` is a list of safe repository-relative paths or glob patterns. It defaults to empty.
 - Unknown fields are rejected.
 
-If `.pi/pi-control.json` exists, the project must be trusted before `pi-control` loads it. Without the file, the defaults apply.
+If `.pi/pi-control.json` exists, the project must be trusted before `pi-control` loads it. Without the project file, global settings and defaults apply.
 
 There is no setting to disable scope enforcement or to treat failed checks as verified.
 
@@ -226,7 +189,7 @@ It expects Backlog 1.52.0 task-view JSON with:
 - A non-empty `implementationPlan` containing task-local implementation instructions.
 - The task's `path`, `status`, and `assignees` for claiming and later consistency checks.
 - `definitionOfDone` items whose text begins exactly with `Verification:`.
-- Any ordinary acceptance criteria as human criteria only.
+- Acceptance criterion identifiers, text, and checkbox state for separate acceptance review.
 
 Scope entries may be:
 
@@ -271,13 +234,13 @@ There are nine slash commands.
 | --- | --- | --- |
 | `/implement <task-id>` | `/implement BACK-123` | Validates the task and Git baseline, assigns the task to `claimAssignee`, and sets `inProgressStatus`. It reads the claim back before prompting the agent, then verifies automatically when the agent settles. |
 | `/implement-resume [task-id]` | `/implement-resume BACK-123` | Resumes a `FAILED` or restored run. It rechecks root, `HEAD`, baseline, task equality, and scope. It resets the automatic repair budget. |
-| `/verify [task-id]` | `/verify BACK-123` | Runs scope checks and every configured verification command. It requires an active run and its captured baseline. It never starts a repair loop. |
+| `/verify [task-id]` | `/verify BACK-123` | Runs scope checks and every configured verification command, then requests read-only acceptance review on success. It requires the captured baseline and never starts a repair loop. |
 | `/verify-waive <task-id> <reason>` | `/verify-waive BACK-123 upstream service unavailable` | Records a human waiver for current failed command checks. It cannot waive scope failures, changed `HEAD`, task changes, or malformed task data. |
-| `/scope-show` | `/scope-show` | Shows original Backlog scope and run-local user additions. |
+| `/scope-show` | `/scope-show` | Shows original Backlog scope, run-local user additions, and the frozen artifact policy. |
 | `/scope-add <scope-entry>` | `/scope-add src/new-file.ts` | Adds one run-local scope entry after confirmation. The whole remaining slash argument is the entry. Slash args are not a shell, so do not add shell quotes unless quote characters are part of the path. |
 | `/control-status` | `/control-status` | Shows active task, phase, baseline commit, scope, repair count, latest verification, and freshness. |
 | `/control-abort` | `/control-abort` | Ends the workflow after confirmation. It does not revert files. Without UI confirmation it fails closed. |
-| `/commit <task-id> [message]` | `/commit BACK-123 BACK-123: validate config` | Commits the verified or waived task changes after confirmation. It does not push or close the Backlog task. |
+| `/commit <task-id> [message]` | `/commit BACK-123 BACK-123: validate config` | Commits the verified or waived task changes after confirmation. It then finalizes the task in a separate metadata commit. Retry pending finalization with the same command. It does not push. |
 
 Task IDs must match the active task. A changed Backlog task definition is treated as a hard mismatch. Restore the task or abort and start a new `/implement` run.
 
@@ -289,9 +252,9 @@ The command refuses tasks assigned to someone else and tasks outside those two s
 
 Backlog auto-commit must stay disabled. The extension captures the original Git baseline before issuing the claim, then freezes the exact resulting task-file fingerprint. That file is controller-managed, not an addition to the agent's editable scope. A broad scope glob does not grant the agent permission to edit it. Any later task-file changes fail verification, even when the normalized task fields still look unchanged.
 
-The active task file must be a Git-visible regular file without symlinks. If `BACKLOG_CWD` is set, it must resolve to the captured repository root. Other Backlog files receive no exemption. A claim can update an already-uncommitted task file, as long as baseline validation passes. When this run's claim changes the file, `/commit` includes its full resulting contents and warns if it was already uncommitted at startup. If the task was already claimed and no write was needed, pre-existing task-file changes stay outside the commit, like other pre-existing changes the run did not modify.
+The active task file must be a Git-visible regular file without symlinks. If `BACKLOG_CWD` is set, it must resolve to the captured repository root. Other Backlog files receive no exemption. A claim can update an already-uncommitted task file, as long as baseline validation passes. The final metadata commit includes the active task file's full resulting contents, even if it was already claimed and required no claim write. Commit confirmation warns if that task file was already uncommitted at startup. Other pre-existing changes remain outside both commits.
 
-If claiming fails or changes unexpected files or `HEAD`, no implementation prompt is sent. The run stays paused. Inspect the task, use `/control-abort`, then retry `/implement`. Aborting does not release the claim or revert files. Claiming does not close the task on commit.
+If claiming fails or changes unexpected files or `HEAD`, no implementation prompt is sent. The run stays paused. Inspect the task, use `/control-abort`, then retry `/implement`. Aborting does not release the claim or revert files. Task closure happens only after the implementation commit succeeds and the controller validates the intended finalization changes.
 
 Active runs saved before claiming support lack a captured claim and cannot silently resume under the new task contract. Preserve their changes before aborting, then satisfy the clean-scope baseline requirements before starting a new run.
 
@@ -309,6 +272,7 @@ FAILED
 VERIFIED
 WAIVED
 STALE
+FINALIZING
 COMMITTED
 ABORTED
 ```
@@ -324,7 +288,7 @@ Default automatic loop:
 5. At most two repair turns run by default.
 6. After the limit, the run becomes `FAILED` and automatic prompting stops.
 
-`/verify` is manual and does not consume or start the repair loop.
+`/verify` is manual and does not consume or start the repair loop. A successful verification starts a separate acceptance-review turn. `VERIFIED` describes the mechanical result; commit still requires a satisfied acceptance assessment.
 
 State is persisted with Pi session entries. On restore, an active run is paused. It does not prompt or verify by itself. Use `/control-status`, `/verify`, or `/implement-resume`.
 
@@ -347,12 +311,27 @@ After start:
 - `HEAD` must stay equal to the captured commit until `/commit` succeeds.
 - Newly changed paths must match the effective scope or the exact controller-managed claim fingerprint.
 - Staged content is allowed only for task-changed paths after the run starts.
-- Ignored files are not counted unless they become Git-visible.
+- Ignored, untracked files are not counted.
+- Matching disposable untracked artifacts are excluded under the policy captured at run start. Tracked and staged files still undergo normal checks.
 - Verification reports all offending paths it finds, not just the first one.
 
 The Git adapter hashes all tracked files to detect content and mode changes even when status settings hide them. This can add overhead on large repositories. It stores fingerprints, not copies of file contents.
 
 Submodules, sparse checkout skip-worktree paths, assume-unchanged paths, unmerged index entries, and unsupported index flags fail closed. Literal backslashes in Git filenames are unsupported and produce an error rather than silently naming another file. Scope input separators normalize to `/`, with original text retained for display.
+
+## Disposable cache files
+
+For caches that every contributor should ignore, prefer `.gitignore`. For user-specific exclusions, set `untrackedArtifacts` in global config, or override it in a trusted project:
+
+```json
+{
+  "untrackedArtifacts": ["**/__pycache__/**", "**/.pytest_cache/**"]
+}
+```
+
+Only matching untracked, unstaged regular files qualify. They do not cause scope violations or verification-mutation failures, do not affect the content digest, and are never automatically staged, even when task scope also matches. Tracked and staged files get no exemption. Generated files intended for commit still require explicit task scope and must not qualify as disposable artifacts.
+
+Patterns use the existing path and glob safety rules. Symlink escapes are not cache exemptions. Each run saves its effective artifact policy. Editing config or restoring a session does not change an active run's exclusions. Start a new run to adopt a different policy.
 
 ## Verification and stale results
 
@@ -368,7 +347,17 @@ Commands run sequentially from the captured repository root through the configur
 
 `Verification:` command text is trusted project configuration from approved Backlog tasks. It is passed as raw shell source. Do not put unreviewed task text there. These commands should be checks, not mutators. If they change Git-visible content, verification fails with `verification-mutated-worktree`.
 
-A `VERIFIED` or `WAIVED` result is bound to a digest of the task, scope, commands, changed paths, and content fingerprints. Any relevant change makes it `STALE`. Staging identical verified content does not by itself change the content digest, but index invariants are still checked.
+A `VERIFIED` or `WAIVED` result is bound to a digest of the task, scope, commands, frozen artifact policy, changed paths, and content fingerprints. Any relevant change makes it `STALE`. Staging identical verified content does not by itself change the content digest, but index invariants are still checked.
+
+## Acceptance review
+
+Mechanical verification and acceptance review are separate. After successful checks or an explicit command waiver, the controller requests a read-only model turn and accepts its structured result through `pi_control_acceptance_review`. While review is pending, the tool gate permits only read, grep, find, ls, read-only LSP queries, and the review submission tool. It blocks Bash and other tools, even if tool-list filtering fails. Other extensions and external processes remain trusted code, not sandboxed processes.
+
+The reviewer assesses every criterion as `satisfied`, `unsatisfied`, or `uncertain` and supplies evidence plus a proposed final summary. Missing, malformed, unsatisfied, or uncertain results block completion. Review cannot override scope failures or turn failed commands into a pass.
+
+The assessment binds to the checked task definition and code digest. Changing either invalidates it. Existing human checkmarks remain intact but do not count as review evidence. The controller writes no automated checkmarks before commit, so a stale assessment cannot leave new checkmarks behind.
+
+Commit confirmation shows the assessment, evidence, and proposed final summary. Known command failures and their waiver reason appear in the final summary. Acceptance review has no waiver. An unsatisfied or uncertain result pauses the run as `FAILED`; use `/implement-resume` to repair it. A malformed response stays unaccepted. Use `/verify` to request a fresh review after interruption or restoration.
 
 ## Waivers
 
@@ -412,11 +401,16 @@ These checks do not isolate malicious hooks or concurrent processes. Do not run 
 
 - the supplied task ID equals the active task;
 - state is current `VERIFIED` or `WAIVED`;
+- a current acceptance assessment marks every criterion satisfied and provides evidence;
 - `HEAD`, task equality, scope, baseline, and digest still pass;
 - no staged paths outside the task-changed path set;
 - interactive confirmation.
 
-It stages changed implementation paths that match the effective scope, including deletions, and the exact controller-managed task file changed by claiming. It rechecks after confirmation and staging, then compares the resulting commit against the prepared index. It uses argument-safe Git invocation, not shell interpolation. On success it records `COMMITTED` and the commit SHA. It does not push and does not mark the Backlog task done.
+The first commit stages only changed implementation paths that match the effective scope, including deletions. The separate metadata commit includes the active task file, including its controller-owned claim changes. It rechecks after confirmation and staging, then compares the resulting commit against the prepared index. It uses argument-safe Git invocation, not shell interpolation. After implementation commit success, it persists the SHA before finalizing Backlog. It checks satisfied criteria through the CLI, writes the confirmed final summary, and moves the task to the terminal status captured at run start. A second commit includes only that task file. `COMMITTED` means both steps succeeded. It never pushes.
+
+If finalization fails, `/commit <task-id>` retries only finalization. It does not create another implementation commit. The saved state survives session restoration and stays paused until explicit retry. Unexpected file changes, task edits, or index changes block the retry. The controller compares CLI readback and task-file text, allowing only intended criterion checkmarks, status, timestamp, and final summary changes. Task files over 1 MiB or unsupported Markdown layouts fail closed. Inspect failures rather than using a blanket `backlog/` scope exemption.
+
+The finalization journal stores the approved summary, criterion indexes, terminal status, and original task text. Partial intended CLI edits can be retried. Both commits use hook guards. The controller records each prepared commit diff before invoking Git. If a commit succeeds before a post-commit timeout or interrupted session, retry recognizes that exact diff and parent. It does not repeat the successful commit. A reported implementation commit failure never triggers task closure in that attempt.
 
 ## Troubleshooting
 

@@ -10,4 +10,12 @@ Status: implemented and checked. Backlog 1.52.0 supports task JSON and modified-
 6. Add the isolated Plannotator adapter and fake-event tests. Ship the existing skill after checking its CLI instructions.
 7. Run type checking, linting, and the full test suite. Review hard invariants and document installed-API differences and limitations.
 
-No implementation commits will be created.
+## Follow-up work from open-issues.md
+
+1. Ship planning-only Plannotator instructions and test the approval handoff with Backlog repository instructions present.
+2. Add user-controlled disposable untracked artifacts. Freeze policy per run and keep tracked and staged files under normal checks.
+3. Add read-only, digest-bound acceptance review. Validate every criterion and keep command waivers separate.
+4. Finalize Backlog only after implementation commit success. Use a separate active-task-file-only metadata commit, persist retry state, and never repeat the implementation commit on retry.
+5. Test restoration, stale assessments, CLI and commit failures, unexpected metadata changes, and cache exclusion. Update the README and build brief to match.
+
+No commits will be created in this checkout.

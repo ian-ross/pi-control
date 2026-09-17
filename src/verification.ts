@@ -1,3 +1,4 @@
+import type { ArtifactPolicy } from "./artifacts.ts";
 import { inspectRun as inspectGitRun, type Baseline, type Inspection, type ManagedFiles } from "./git.ts";
 import { verificationDigest } from "./digest.ts";
 import type { ControlTask } from "./backlog.ts";
@@ -23,6 +24,7 @@ export interface VerificationInput {
   task: ControlTask;
   scope: ScopeEntry[];
   managedFiles?: ManagedFiles;
+  artifactPolicy?: ArtifactPolicy;
   shell: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -34,7 +36,7 @@ export type RunnerDependency =
 
 export interface VerificationDeps {
   runner?: RunnerDependency;
-  inspectRun?: (baseline: Baseline, scope: ScopeEntry[], managedFiles?: ManagedFiles) => Inspection | Promise<Inspection>;
+  inspectRun?: (baseline: Baseline, scope: ScopeEntry[], managedFiles?: ManagedFiles, artifactPolicy?: ArtifactPolicy) => Inspection | Promise<Inspection>;
   now?: () => Date;
   verificationDigest?: (
     baseline: Baseline,
@@ -42,6 +44,7 @@ export interface VerificationDeps {
     scope: ScopeEntry[],
     commands: string[],
     inspection: Inspection,
+    artifactPolicy?: ArtifactPolicy,
   ) => string;
 }
 
@@ -77,7 +80,7 @@ export async function runVerification(input: VerificationInput, deps: Verificati
   const repoRoot = repoRootFromBaseline(input.baseline);
   const commands = input.task.verificationCommands;
 
-  const before = await inspectRun(input.baseline, input.scope, input.managedFiles);
+  const before = await inspectRun(input.baseline, input.scope, input.managedFiles, input.artifactPolicy);
   const commandResults: CommandResult[] = [];
 
   let stopForCancellation = input.signal?.aborted === true;
@@ -99,7 +102,7 @@ export async function runVerification(input: VerificationInput, deps: Verificati
     if (result.cancelled) stopForCancellation = true;
   }
 
-  const after = await inspectRun(input.baseline, input.scope, input.managedFiles);
+  const after = await inspectRun(input.baseline, input.scope, input.managedFiles, input.artifactPolicy);
   const mutated = before.contentDigest !== after.contentDigest;
   const inspection = after;
   const errors = commandResults.map(commandError).filter((error): error is string => error !== null);
@@ -111,7 +114,7 @@ export async function runVerification(input: VerificationInput, deps: Verificati
   const scopeOk = inspection.scopeOk;
 
   return {
-    digest: digest(input.baseline, input.task.id, input.scope, commands, inspection),
+    digest: digest(input.baseline, input.task.id, input.scope, commands, inspection, input.artifactPolicy),
     scopeOk,
     checksOk,
     passed: scopeOk && checksOk,

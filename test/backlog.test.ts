@@ -41,6 +41,25 @@ async function taskView(overrides: Record<string, unknown> = {}): Promise<string
   return JSON.stringify(raw);
 }
 
+test('acceptance identifiers and indexes must be unique and well-formed', async () => {
+  const criterion = { index: 1, text: 'Criterion', checked: false };
+  for (const criteria of [
+    [criterion, { ...criterion, text: 'Other' }],
+    [{ ...criterion, id: 'same' }, { ...criterion, index: 2, id: 'same' }],
+    [{ ...criterion, id: 7 }],
+    [{ ...criterion, id: '' }],
+    [{ ...criterion, id: 'bad\u0000id' }],
+  ]) {
+    const raw = await taskView({ acceptanceCriteria: criteria });
+    assert.throws(() => normalizeTask(raw), /unique|identifier/);
+  }
+  const raw = await taskView({ acceptanceCriteria: [{ ...criterion, id: 'criterion-one', checked: true }], finalSummary: 'Human summary' });
+  const task = normalizeTask(raw);
+  assert.equal(task.acceptanceCriteriaState![0].id, 'criterion-one');
+  assert.equal(task.acceptanceCriteriaState![0].checked, true);
+  assert.equal(task.finalSummary, 'Human summary');
+});
+
 test("normalizeTask maps Backlog 1.52.0 task-view JSON", async () => {
   const task = normalizeTask(await fixture("backlog-1.52.0-task-view-valid.json"));
 
@@ -55,6 +74,10 @@ test("normalizeTask maps Backlog 1.52.0 task-view JSON", async () => {
       assignees: [],
     },
     acceptanceCriteria: ["Parses basic input", "Rejects malformed input"],
+    acceptanceCriteriaState: [
+      { id: "1", index: 1, text: "Parses basic input", checked: false },
+      { id: "2", index: 2, text: "Rejects malformed input", checked: false },
+    ],
     allowedScope: [
       "src/parser.ts",
       "tests/parser.test.ts",

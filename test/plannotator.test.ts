@@ -103,6 +103,8 @@ test("dispatches approved plans through the plan-to-backlog skill expansion path
 		assert.match(harness.sent[0]!.content, /^\/skill:plan-to-backlog\b/);
 		assert.match(harness.sent[0]!.content, /Split tests from implementation\./);
 		assert.match(harness.sent[0]!.content, /# Approved/);
+		assert.match(harness.sent[0]!.content, /Repository task-management instructions now apply only for Backlog task generation/);
+		assert.match(harness.sent[0]!.content, /approved-plan handoff is the reason this workflow is allowed to mutate Backlog/);
 		assert.match(harness.sent[0]!.content, /non-empty implementationPlan/);
 		assert.match(harness.sent[0]!.content, /backlog task edit <id> --plan/);
 		assert.match(harness.sent[0]!.content, /task\.implementationPlan/);
@@ -112,6 +114,39 @@ test("dispatches approved plans through the plan-to-backlog skill expansion path
 		assert.equal((harness.entries[0]!.data as { status: string }).status, "received");
 		assert.equal((harness.entries[1]!.data as { status: string }).status, "queued");
 		assert.equal("planContent" in (harness.entries[1]!.data as Record<string, unknown>), false);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test('simulated planning with AGENTS Backlog instructions waits for approval before task generation', async () => {
+	const cwd = makeTempDir();
+	try {
+		writeFileSync(join(cwd, 'AGENTS.md'), [
+			'# Agent instructions',
+			'',
+			'Create Backlog tasks for any planned work before implementation.',
+		].join('\n'));
+		writeFileSync(join(cwd, 'plan.md'), '# Proposed plan\n\n- [ ] Implement later\n');
+		const harness = createHarness();
+
+		assert.equal(harness.sent.length, 0);
+		assert.equal(harness.entries.length, 0);
+		assert.equal(harness.calls.length, 0);
+
+		harness.eventBus.emit(PLANNOTATOR_PLAN_APPROVED_CHANNEL, {
+			cwd,
+			planFilePath: 'plan.md',
+			planContent: '# Proposed plan\n\n- [ ] Implement later\n',
+		});
+		await harness.flush();
+
+		assert.deepEqual(harness.calls, [{ command: 'backlog', args: ['config', 'get', 'autoCommit'], cwd }]);
+		assert.equal(harness.sent.length, 1);
+		assert.match(harness.sent[0]!.content, /^\/skill:plan-to-backlog\b/);
+		assert.match(harness.sent[0]!.content, /The plan has been approved/);
+		assert.match(harness.sent[0]!.content, /Only create or update Backlog tasks/);
+		assert.equal((harness.entries[1]!.data as { status: string }).status, 'queued');
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

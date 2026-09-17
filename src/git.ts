@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 
 import { matchesScope, type ScopeEntry } from './paths.ts';
 import { stableDigest } from './digest.ts';
+import { matchesUntrackedArtifact, type ArtifactPolicy } from './artifacts.ts';
 
 const execFile = promisify(execFileCb);
 
@@ -179,6 +180,10 @@ function stagedPaths(entries: StatusEntry[]): string[] {
     }
   }
   return uniqueSorted(paths);
+}
+
+function unstagedUntrackedPaths(entries: StatusEntry[]): string[] {
+  return uniqueSorted(entries.filter((entry) => entry.x === '?' && entry.y === '?').map((entry) => entry.path));
 }
 
 function parseIndexEntries(raw: string): IndexEntry[] {
@@ -380,6 +385,31 @@ async function canonicalPathTargets(rootReal: string, rel: string, fingerprint: 
   }
 }
 
+async function disposableUntrackedArtifactPaths(root: string, entries: StatusEntry[], trackedPaths: Iterable<string>, artifactPolicy?: ArtifactPolicy): Promise<Set<string>> {
+  const ignored = new Set<string>();
+  if (!artifactPolicy || artifactPolicy.untrackedArtifacts.length === 0) return ignored;
+  const tracked = new Set(trackedPaths);
+  const rootReal = await realpath(root);
+
+  for (const filePath of unstagedUntrackedPaths(entries)) {
+    if (tracked.has(filePath) || !matchesUntrackedArtifact(filePath, artifactPolicy)) continue;
+    let fingerprint: PathFingerprint;
+    try {
+      fingerprint = await fingerprintPath(root, filePath);
+    } catch (error) {
+      if (error instanceof UnsafeRepoPathError) continue;
+      throw error;
+    }
+    if (fingerprint.kind !== 'file') continue;
+    const auth = await canonicalPathTargets(rootReal, filePath, fingerprint);
+    if (!auth.escapes && auth.targets.every((target) => matchesUntrackedArtifact(target, artifactPolicy))) {
+      ignored.add(filePath);
+    }
+  }
+
+  return ignored;
+}
+
 function objectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -478,7 +508,7 @@ export function validateBaseline(value: unknown): asserts value is Baseline {
   }
 }
 
-export async function captureBaseline(root: string, scope: ScopeEntry[]): Promise<Baseline> {
+export async function captureBaseline(root: string, scope: ScopeEntry[], artifactPolicy?: ArtifactPolicy): Promise<Baseline> {
   const repoRoot = await assertRepositoryRoot(root);
   const entries = await indexEntries(repoRoot);
   const indexErrors = unsupportedIndexErrors(entries);
@@ -493,6 +523,7 @@ export async function captureBaseline(root: string, scope: ScopeEntry[]): Promis
   }
 
   const index = indexMap(entries);
+  const artifactPaths = await disposableUntrackedArtifactPaths(repoRoot, status, Object.keys(index), artifactPolicy);
   const tracked: Record<string, PathFingerprint> = Object.create(null);
   const modeMismatchPaths: string[] = [];
   for (const entry of entries) {
@@ -504,7 +535,7 @@ export async function captureBaseline(root: string, scope: ScopeEntry[]): Promis
     }
   }
 
-  const dirtyPaths = uniqueSorted([...statusPaths(status), ...modeMismatchPaths]);
+  const dirtyPaths = uniqueSorted([...statusPaths(status).filter((filePath) => !artifactPaths.has(filePath)), ...modeMismatchPaths]);
   const dirtyInsideScope = dirtyPaths.filter((filePath) => matchesScope(filePath, scope));
   if (dirtyInsideScope.length > 0) {
     throw new Error(`dirty paths inside scope are not allowed at baseline: ${dirtyInsideScope.join(', ')}`);
@@ -524,7 +555,7 @@ export async function captureBaseline(root: string, scope: ScopeEntry[]): Promis
   };
 }
 
-export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], managedFiles: ManagedFiles = {}): Promise<Inspection> {
+export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], managedFiles: ManagedFiles = {}, artifactPolicy?: ArtifactPolicy): Promise<Inspection> {
   validateBaseline(baseline);
   validateManagedFiles(managedFiles);
   const root = await realpath(baseline.root);
@@ -545,8 +576,9 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], manage
 
   const status = await statusEntries(root);
   const staged = stagedPaths(status);
-  const currentStatusPaths = statusPaths(status);
   const currentTrackedPaths = entries.filter((entry) => entry.stage === '0').map((entry) => entry.path);
+  const artifactPaths = await disposableUntrackedArtifactPaths(root, status, currentTrackedPaths, artifactPolicy);
+  const currentStatusPaths = statusPaths(status).filter((filePath) => !artifactPaths.has(filePath));
   const candidatePaths = uniqueSorted([
     ...Object.keys(baseline.tracked),
     ...Object.keys(baseline.dirty),

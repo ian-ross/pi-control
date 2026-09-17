@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import type { ArtifactPolicy } from './artifacts.ts';
 import type { Baseline, Inspection, PathFingerprint } from './git.ts';
 import type { ScopeEntry } from './paths.ts';
 
@@ -29,6 +30,7 @@ export function verificationDigest(
   scope: ScopeEntry[],
   commands: string[],
   inspection: Inspection,
+  artifactPolicy?: ArtifactPolicy,
 ): string {
   const changedPaths = [...inspection.changedPaths].sort((a, b) => a.localeCompare(b));
   const fingerprints: Record<string, PathFingerprint> = Object.create(null);
@@ -42,6 +44,7 @@ export function verificationDigest(
     taskId,
     scope: scope.map((entry) => ({ text: entry.text, kind: entry.kind, pattern: entry.pattern })),
     commands,
+    artifactPolicy: artifactPolicy?.untrackedArtifacts.map((entry) => ({ text: entry.text, kind: entry.kind, pattern: entry.pattern })) ?? [],
     changedPaths,
     fingerprints,
   });

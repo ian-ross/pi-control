@@ -12,6 +12,15 @@ function result(passed: boolean): VerificationResult {
 }
 const makeRun = () => createRun(task, baseline, scope, 2);
 
+test('scope changes discard unsatisfied assessments as well as accepted ones', () => {
+  const run = makeRun();
+  run.phase = 'FAILED';
+  run.acceptanceReview = { taskId: task.id, taskDigest: 'a'.repeat(64), codeDigest: 'b'.repeat(64), summary: 'Needs evidence', criteria: [{ id: '1', status: 'uncertain', evidence: ['Behavior not demonstrated.'] }], timestamp: new Date().toISOString(), accepted: false };
+  addScope(run, { text: 'test/', kind: 'directory', pattern: 'test' });
+  assert.equal(run.acceptanceReview, undefined);
+  assert.equal(run.phase, 'FAILED');
+});
+
 test('initial implementation and bounded repairs require explicit pending state', () => {
   const run = makeRun();
   assert.equal(run.phase, 'IMPLEMENTING');

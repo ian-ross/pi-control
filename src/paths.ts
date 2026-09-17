@@ -212,7 +212,7 @@ function looksLikeGlob(entry: string): boolean {
   return GLOB_CHARS.test(entry);
 }
 
-function validateGlob(pattern: string): void {
+export function validateGlob(pattern: string): void {
   if (pattern === '') {
     throw new Error('empty scope entry is not allowed');
   }
