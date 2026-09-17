@@ -23,8 +23,8 @@
       "config/**/*.json"
     ],
     "ordinal": 1000,
-    "createdAt": "2026-09-17T13:37:00Z",
-    "updatedAt": "2026-09-17T13:39:00Z",
+    "createdAt": "2026-09-17T09:56:00Z",
+    "updatedAt": null,
     "dueDate": null,
     "isReady": true,
     "path": "backlog/tasks/back-1 - Implement-parser.md",
@@ -82,7 +82,7 @@
         "checked": false
       }
     ],
-    "implementationPlan": "1. Extend parseTimestamp in src/parser.ts to read numeric UTC offsets.\n2. Preserve naive timestamp handling; reject malformed offsets.\n3. Add offset and invalid-input cases to tests/parser.test.ts.\n4. Run the task verification commands.",
+    "implementationPlan": null,
     "implementationNotes": null,
     "comments": [],
     "finalSummary": null

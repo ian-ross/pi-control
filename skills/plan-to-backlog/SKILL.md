@@ -1,13 +1,14 @@
 ---
 name: plan-to-backlog
-description: Convert an approved implementation plan into a small set of atomic Backlog.md tasks with explicit file scope, acceptance criteria, dependencies, and deterministic verification checks. Use after a plan has been reviewed and approved. Do not implement the tasks.
+description: Convert an approved plan into Backlog.md tasks with required task-local implementation plans, explicit file scope, acceptance criteria, dependencies, and deterministic verification checks. Invoke only after explicit plan approval. Do not implement the tasks.
+disable-model-invocation: true
 ---
 
 # Plan to backlog
 
 Convert an already-approved implementation plan into executable Backlog.md tasks.
 
-The output of this skill is a set of Backlog.md issues suitable for later execution by a constrained `/implement` workflow.
+The output of this skill is a set of Backlog.md issues suitable for later execution by a constrained `/implement` workflow. Every created or updated implementation task must have a non-empty `implementationPlan` field. Task generation is incomplete until each plan has been written through the CLI and read back from task JSON.
 
 Do **not** implement the plan.
 Do **not** modify product code.
@@ -48,6 +49,8 @@ If such a contradiction materially prevents correct task generation, report it i
 
 Use the `backlog` CLI. Do not create or edit Backlog task files manually.
 
+Before creating or updating tasks, run `backlog config get autoCommit` in the project. It must succeed and print `false`. If auto-commit is enabled or cannot be read, stop and ask the user to run `backlog config set autoCommit false`. Do not change configuration yourself, initialize a missing project, or create tasks until this prerequisite passes. Backlog must not create commits during this workflow.
+
 Useful forms include:
 
 ```bash
@@ -57,7 +60,9 @@ backlog task create "Title" \
   --modified-file path/to/file \
   --dod "Verification: command"
 
+backlog task edit <id> --plan $'1. Update path/to/file using the approved design.\n2. Add the specified behavior and regression tests.\n3. Run the task verification commands.'
 backlog task edit <id> --dep task-1 --dep task-2
+backlog task <id> --json
 ```
 
 Use `backlog task <id> --json` for the installed Backlog 1.52.0 task-view JSON schema. Use `--plain` only for human-readable inspection.
@@ -269,20 +274,32 @@ This complements the hard file whitelist with semantic boundaries.
 
 ## Implementation plan field
 
-Use the Backlog implementation-plan field only for short task-local implementation guidance.
+Every implementation task must contain a task-local plan in Backlog's `implementationPlan` field. Populate it during task generation, not when implementation starts. This approved-plan workflow prepares queued tasks for a later implementation session, even when generic Backlog guidance suggests deferring plans until work starts.
 
-Do not reproduce the project-level Plannotator plan verbatim.
+Write the plan for an implementation agent that has not seen the planning conversation. Include:
 
-A task-local plan should normally be 2–6 concise steps.
+* ordered changes, with relevant repository paths and symbols confirmed by inspection;
+* the approved design decisions and constraints needed for this task;
+* dependency assumptions and any interfaces supplied by earlier tasks;
+* specific test cases and edge cases, with the verification commands already listed in Definition of Done.
 
-Example:
+Use enough detail to implement the task without reconstructing the parent plan. Do not paste unrelated parts of that plan into every issue. A link, title, acceptance-criteria list, or placeholder such as "see approved plan" does not replace implementation instructions.
+
+For example, after confirming these paths and symbols exist:
 
 ```text
-1. Extend timestamp parsing to handle numeric UTC offsets.
-2. Preserve the existing naive timestamp path.
-3. Add success and invalid-offset test cases.
-4. Run the task verification commands.
+1. Extend parseTimestamp in src/parser.ts to read numeric UTC offsets using
+   the existing date parser. Preserve the current behavior for naive timestamps.
+2. Reject missing offset digits and out-of-range hours or minutes through the
+   existing validation error path. Do not change the public return type.
+3. Add cases in tests/parser.test.ts for positive and negative offsets, zero
+   offset, malformed offsets, and existing naive timestamp inputs.
+4. Run npm test -- parser and npm run lint.
 ```
+
+After creating the task, use `backlog task edit <id> --plan <text>`. Pass real newlines, for example with Bash `$'...\n...'` quoting. Read it back with `backlog task <id> --json` and inspect `task.implementationPlan`.
+
+Keep the task in its initial status. Do not mark it In Progress merely to attach a plan. Backlog 1.52.0 accepts `task edit --plan` on To Do tasks. If the installed CLI rejects this operation, report the error rather than omitting the plan or changing status.
 
 ## Existing tasks
 
@@ -324,6 +341,7 @@ Do not start implementing.
 For each candidate task determine:
 
 * purpose;
+* task-local implementation plan;
 * file whitelist;
 * acceptance criteria;
 * verification commands;
@@ -335,7 +353,7 @@ Reconsider any task whose file scope is very large or crosses unrelated componen
 
 Create prerequisite tasks first so later tasks can refer to their Backlog IDs.
 
-Use `backlog task create`.
+Use `backlog task create`, then immediately write that task's implementation plan with `backlog task edit <id> --plan <text>`. Do not leave the plan only in the description, a comment, the parent planning document, or the final chat response.
 
 Add dependencies using `--dep` during creation or immediately afterward with `backlog task edit`.
 
@@ -350,12 +368,13 @@ backlog task <id> --json
 Confirm that each task contains:
 
 * a clear description;
+* a non-empty `task.implementationPlan` with the intended task-local instructions, not just a heading or reference;
 * acceptance criteria;
 * explicit modified files;
 * deterministic verification checks;
 * correct dependencies.
 
-Correct any omissions using the Backlog CLI.
+Correct any omissions using the Backlog CLI. If `task.implementationPlan` is null, missing, or blank, write it with `backlog task edit <id> --plan <text>` and read the task back again. Do not report generation as complete while any task lacks its plan.
 
 ### 6. Stop
 
@@ -363,12 +382,13 @@ After task creation and validation:
 
 * do not implement anything;
 * do not run `/implement`;
+* do not claim tasks or move them to In Progress; `/implement` owns that transition;
 * do not mark acceptance criteria complete;
 * do not mark Definition of Done items complete;
 * do not change task status to Done;
 * do not commit code.
 
-Report the created task IDs and a brief dependency summary.
+Report the created or updated task IDs and a brief dependency summary. Confirm that every task's implementation plan was saved and read back.
 
 ## Quality checks
 
@@ -376,7 +396,8 @@ Before finishing, verify all of the following for every implementation task:
 
 * [ ] It represents one coherent change.
 * [ ] It can be reviewed and committed independently.
-* [ ] `modified_files` is explicit and narrow.
+* [ ] `task.implementationPlan` contains a self-contained implementation plan and was checked in CLI JSON after writing.
+* [ ] `modifiedFiles` is explicit and narrow.
 * [ ] Every expected modified file is included.
 * [ ] Acceptance criteria describe outcomes rather than implementation steps.
 * [ ] Important compatibility and edge-case requirements are represented.

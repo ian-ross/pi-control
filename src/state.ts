@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import picomatch from 'picomatch';
 import type { ControlTask } from './backlog.js';
-import { validateBaseline, type Baseline } from './git.js';
+import { validateBaseline, validateManagedFiles, type ManagedFiles, type Baseline } from './git.js';
 import type { ScopeEntry } from './paths.js';
 import type { VerificationResult } from './verification.js';
 
@@ -9,6 +9,8 @@ export type RunPhase = 'IMPLEMENTING' | 'VERIFYING' | 'REPAIRING' | 'FAILED' | '
 export interface ImplementationRun {
   task: ControlTask;
   baseline: Baseline;
+  managedFiles?: ManagedFiles;
+  claimPending?: boolean;
   originalScope: ScopeEntry[];
   additions: { entry: ScopeEntry; timestamp: string; source: 'user' }[];
   phase: RunPhase;
@@ -106,6 +108,15 @@ export function restoreState(data: unknown): ImplementationRun | null {
   if (!object(r) || !object(r.task) || !object(r.baseline)) throw invalid();
   const t = r.task;
   if (!nonempty(t.id) || !nonempty(t.title) || (t.description !== undefined && typeof t.description !== 'string') || !strings(t.acceptanceCriteria) || !strings(t.allowedScope) || !t.allowedScope.length || !strings(t.verificationCommands) || !t.verificationCommands.length || t.verificationCommands.some(c => !c.trim())) throw invalid();
+  if (t.implementationPlan !== undefined && (typeof t.implementationPlan !== 'string' || !t.implementationPlan.trim())) throw invalid();
+  if (t.lifecycle !== undefined && (!object(t.lifecycle) || !nonempty(t.lifecycle.status) || !t.lifecycle.status.trim() || !strings(t.lifecycle.assignees) || t.lifecycle.assignees.some(a => !a.trim()) || !nonempty(t.lifecycle.path) || !safeRelative(t.lifecycle.path) || t.lifecycle.path.includes('\\') || !t.lifecycle.path.endsWith('.md') || t.lifecycle.path.split('/').some(p => !p || p === '.'))) throw invalid();
+  if (r.managedFiles !== undefined) {
+    try { validateManagedFiles(r.managedFiles); } catch { throw invalid(); }
+    const paths = Object.keys(r.managedFiles);
+    if (paths.length !== 1 || !object(t.lifecycle) || paths[0] !== t.lifecycle.path) throw invalid();
+  }
+  if (r.claimPending !== undefined && (typeof r.claimPending !== 'boolean' || r.managedFiles === undefined)) throw invalid();
+  if (r.claimPending && (!['FAILED', 'ABORTED'].includes(String(r.phase)) || r.pendingAutomatic)) throw invalid();
   try { validateBaseline(r.baseline); } catch { throw invalid(); }
   if (!Array.isArray(r.originalScope) || !r.originalScope.length || !r.originalScope.every(scope) || !Array.isArray(r.additions) || !r.additions.every(a => object(a) && scope(a.entry) && a.source === 'user' && nonempty(a.timestamp))) throw invalid();
   if (!['IMPLEMENTING', 'VERIFYING', 'REPAIRING', 'FAILED', 'VERIFIED', 'WAIVED', 'STALE', 'COMMITTED', 'ABORTED'].includes(String(r.phase)) || !count(r.repairs) || !count(r.maxRepairAttempts) || (r.repairs as number) > (r.maxRepairAttempts as number) || typeof r.pendingAutomatic !== 'boolean' || typeof r.restored !== 'boolean' || !nonempty(r.createdAt)) throw invalid();

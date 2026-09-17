@@ -1,10 +1,26 @@
+import { realpath } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { normalizeClaimSettings, type ClaimSettings } from './config.js';
 import { compileScope } from './paths.js';
+import { stableDigest } from './digest.js';
+
+export type { ClaimSettings } from './config.js';
+
+export interface TaskLifecycle {
+  path: string;
+  status: string;
+  assignees: string[];
+}
 
 export interface ControlTask {
   id: string;
   title: string;
   description?: string;
+  // Only legacy restored runs may omit this field; new task loads require it.
+  implementationPlan?: string;
+  // Only legacy restored runs may omit this field; new task loads require it.
+  lifecycle?: TaskLifecycle;
   acceptanceCriteria: string[];
   allowedScope: string[];
   verificationCommands: string[];
@@ -23,6 +39,8 @@ export type BacklogExec = (
 export type BacklogTaskErrorCode =
   | "invalid-task-id"
   | "backlog-cli"
+  | "backlog-config"
+  | "claim-conflict"
   | "malformed-task"
   | "invalid-scope"
   | "task-id-mismatch";
@@ -40,6 +58,7 @@ export class BacklogTaskError extends Error {
 const VERIFICATION_PREFIX = "Verification:";
 const DEFAULT_BACKLOG_TIMEOUT_MS = 30_000;
 const SAFE_TASK_ID = /^(?:[A-Za-z][A-Za-z0-9_-]*-)?\d+(?:\.\d+)*$/;
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -64,6 +83,16 @@ function parseRawTask(raw: unknown): unknown {
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw taskError(`Backlog task field ${field} must be a non-empty string.`);
+  }
+  return value;
+}
+
+function requireCleanNonBlankString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw taskError(`Backlog task field ${field} must be a non-empty string.`);
+  }
+  if (CONTROL_CHARS.test(value)) {
+    throw taskError(`Backlog task field ${field} must not contain control characters.`);
   }
   return value;
 }
@@ -178,6 +207,37 @@ function extractAllowedScope(task: UnknownRecord): string[] {
   return deduped;
 }
 
+function extractLifecycle(task: UnknownRecord): TaskLifecycle {
+  const assignees = task.assignees;
+  if (!Array.isArray(assignees)) {
+    throw taskError("Backlog task assignees must be an array.");
+  }
+  return {
+    path: normalizeTaskPath(task.path),
+    status: requireCleanNonBlankString(task.status, "status"),
+    assignees: assignees.map((assignee, index) => requireCleanNonBlankString(assignee, `assignees[${index}]`)),
+  };
+}
+
+function normalizeTaskPath(value: unknown): string {
+  const path = requireCleanNonBlankString(value, "path");
+  if (path.includes("\\")) {
+    throw taskError("Backlog task path must use repository-relative POSIX separators.");
+  }
+  if (path.startsWith("/") || path.startsWith("//") || /^[A-Za-z]:/.test(path)) {
+    throw taskError("Backlog task path must be repository-relative.");
+  }
+  if (!path.endsWith(".md")) {
+    throw taskError("Backlog task path must point to a Markdown task file.");
+  }
+
+  const segments = path.split("/");
+  if (segments.some(segment => segment.length === 0 || segment === "." || segment === ".." || segment.toLowerCase() === ".git")) {
+    throw taskError("Backlog task path must not contain empty, traversal, or .git segments.");
+  }
+  return path;
+}
+
 export function normalizeTask(raw: unknown): ControlTask {
   const envelope = parseRawTask(raw);
   if (!isRecord(envelope)) {
@@ -198,12 +258,119 @@ export function normalizeTask(raw: unknown): ControlTask {
   const task: ControlTask = {
     id: requireString(sourceTask.id, "id"),
     title: requireString(sourceTask.title, "title"),
+    lifecycle: extractLifecycle(sourceTask),
     acceptanceCriteria: extractAcceptanceCriteria(sourceTask),
     allowedScope: extractAllowedScope(sourceTask),
     verificationCommands: extractVerificationCommands(sourceTask),
   };
   if (description !== undefined) task.description = description;
+  if (typeof sourceTask.implementationPlan !== 'string' || !sourceTask.implementationPlan.trim()) {
+    throw taskError('Backlog task must include a non-empty implementationPlan. Add it with `backlog task edit <id> --plan <text>` before /implement.');
+  }
+  task.implementationPlan = sourceTask.implementationPlan;
   return task;
+}
+
+export async function requireAutoCommitDisabled(root: string, exec: BacklogExec): Promise<void> {
+  const remedy = 'pi-control requires Backlog auto-commit to be disabled. In the project, run `backlog config set autoCommit false`, then retry. pi-control does not change this setting.';
+  let result: PiExecResult;
+  try {
+    result = await exec('backlog', ['config', 'get', 'autoCommit'], { cwd: root, timeout: DEFAULT_BACKLOG_TIMEOUT_MS });
+  } catch (error) {
+    throw new BacklogTaskError('backlog-config', `Cannot read Backlog autoCommit: ${truncate(error instanceof Error ? error.message : String(error))}. ${remedy}`, { cause: error });
+  }
+  if (result.killed || result.code !== 0) {
+    const detail = truncate([result.stderr, result.stdout].filter(Boolean).join('\n').trim());
+    throw new BacklogTaskError('backlog-config', `backlog config get autoCommit failed${result.killed ? ' or timed out' : ''}${detail ? `: ${detail}` : '.'} ${remedy}`);
+  }
+  // Backlog 1.52.0 prints the effective boolean as a single plain-text value.
+  if (result.stdout.trim() !== 'false') {
+    throw new BacklogTaskError('backlog-config', `Backlog autoCommit reported ${JSON.stringify(truncate(result.stdout.trim(), 200))}. ${remedy}`);
+  }
+}
+
+export function assertClaimable(task: ControlTask, settings: ClaimSettings): TaskLifecycle {
+  const claim = normalizeClaimSettings(settings);
+  const lifecycle = requireLifecycle(task);
+  const status = statusKey(lifecycle.status);
+  if (status !== statusKey(claim.readyStatus) && status !== statusKey(claim.inProgressStatus)) {
+    throw new BacklogTaskError(
+      "claim-conflict",
+      `Backlog task ${task.id} has status ${JSON.stringify(lifecycle.status)}. Only ${JSON.stringify(claim.readyStatus)} or ${JSON.stringify(claim.inProgressStatus)} can be claimed.`,
+    );
+  }
+
+  const owner = assigneeKey(claim.claimAssignee);
+  const other = lifecycle.assignees.find(assignee => assigneeKey(assignee) !== owner);
+  if (other !== undefined) {
+    throw new BacklogTaskError(
+      "claim-conflict",
+      `Backlog task ${task.id} is assigned to ${JSON.stringify(other)}, not ${JSON.stringify(claim.claimAssignee)}.`,
+    );
+  }
+
+  return lifecycle;
+}
+
+export async function claimTask(root: string, task: ControlTask, settings: ClaimSettings, exec: BacklogExec): Promise<ControlTask> {
+  const claim = normalizeClaimSettings(settings);
+  if (process.env.BACKLOG_CWD && await realpath(resolve(root, process.env.BACKLOG_CWD)) !== await realpath(root)) {
+    throw new BacklogTaskError('backlog-config', 'BACKLOG_CWD does not match the captured project root. Unset it or point it at this repository before claiming a task.');
+  }
+  const reread = await loadTask(root, task.id, exec);
+  if (stableDigest(reread) !== stableDigest(task)) {
+    throw new BacklogTaskError(
+      "claim-conflict",
+      `Backlog task ${task.id} changed before claim. Refusing to overwrite changed definition or ownership.`,
+    );
+  }
+
+  const lifecycle = assertClaimable(reread, claim);
+  if (isAlreadyActiveClaim(lifecycle, claim)) {
+    return reread;
+  }
+
+  await requireAutoCommitDisabled(root, exec);
+
+  const id = validateRequestedTaskId(reread.id);
+  let result: PiExecResult;
+  try {
+    result = await exec("backlog", ["task", "edit", id, "--status", claim.inProgressStatus, "--assignee", claim.claimAssignee], {
+      cwd: root,
+      timeout: DEFAULT_BACKLOG_TIMEOUT_MS,
+    });
+  } catch (error) {
+    throw new BacklogTaskError(
+      "backlog-cli",
+      `Cannot run backlog task edit for ${id}: ${truncate(error instanceof Error ? error.message : String(error))}. The task may have been partially written; no implementation was dispatched.`,
+      { cause: error },
+    );
+  }
+
+  if (result.killed || result.code !== 0) {
+    const detail = truncate([result.stderr, result.stdout].filter(Boolean).join("\n").trim());
+    throw new BacklogTaskError(
+      "backlog-cli",
+      `backlog task edit ${id} failed${result.killed ? " or timed out" : ""}${detail ? `: ${detail}` : "."} The task may have been partially written; no implementation was dispatched.`,
+    );
+  }
+
+  const claimed = await loadTask(root, id, exec);
+  const claimedLifecycle = requireLifecycle(claimed);
+  if (!hasExpectedClaim(claimedLifecycle, claim)) {
+    throw new BacklogTaskError(
+      "claim-conflict",
+      `Backlog task ${id} claim read-back mismatch. Expected status ${JSON.stringify(claim.inProgressStatus)} and assignee ${JSON.stringify(claim.claimAssignee)}, got status ${JSON.stringify(claimedLifecycle.status)} and assignees ${JSON.stringify(claimedLifecycle.assignees)}. The task may have been partially written; no implementation was dispatched.`,
+    );
+  }
+  if (definitionDigest(claimed) !== definitionDigest(reread)) {
+    throw new BacklogTaskError(
+      "claim-conflict",
+      `Backlog task ${id} changed outside lifecycle status or assignees during claim. The task may have been partially written; no implementation was dispatched.`,
+    );
+  }
+
+  return claimed;
 }
 
 export async function loadTask(root: string, id: string, exec: BacklogExec): Promise<ControlTask> {
@@ -242,6 +409,38 @@ export async function loadTask(root: string, id: string, exec: BacklogExec): Pro
   }
 
   return task;
+}
+
+function requireLifecycle(task: ControlTask): TaskLifecycle {
+  if (!task.lifecycle) {
+    throw new BacklogTaskError("malformed-task", `Backlog task ${task.id} is missing lifecycle data. Reload it from Backlog before claiming.`);
+  }
+  return task.lifecycle;
+}
+
+function statusKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function assigneeKey(value: string): string {
+  return value.startsWith("@") ? value.slice(1) : value;
+}
+
+function isAlreadyActiveClaim(lifecycle: TaskLifecycle, settings: ClaimSettings): boolean {
+  return statusKey(lifecycle.status) === statusKey(settings.inProgressStatus)
+    && lifecycle.assignees.length === 1
+    && assigneeKey(lifecycle.assignees[0]) === assigneeKey(settings.claimAssignee);
+}
+
+function hasExpectedClaim(lifecycle: TaskLifecycle, settings: ClaimSettings): boolean {
+  return statusKey(lifecycle.status) === statusKey(settings.inProgressStatus)
+    && lifecycle.assignees.length === 1
+    && lifecycle.assignees[0] === settings.claimAssignee;
+}
+
+function definitionDigest(task: ControlTask): string {
+  const lifecycle = task.lifecycle ? { path: task.lifecycle.path } : undefined;
+  return stableDigest({ ...task, lifecycle });
 }
 
 function validateRequestedTaskId(id: string): string {

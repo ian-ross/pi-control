@@ -17,6 +17,8 @@ export type PathFingerprint =
   | { kind: 'directory' }
   | { kind: 'other'; mode: number };
 
+export type ManagedFiles = Record<string, PathFingerprint>;
+
 export interface IndexFingerprint {
   mode: string;
   object: string;
@@ -298,7 +300,7 @@ async function hashFile(absolute: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function fingerprintPath(root: string, rel: string): Promise<PathFingerprint> {
+export async function fingerprintPath(root: string, rel: string): Promise<PathFingerprint> {
   const rootReal = await realpath(root);
   const absolute = await safeRepoPath(rootReal, rel);
 
@@ -410,10 +412,17 @@ function validateFingerprint(value: unknown): value is PathFingerprint {
   return false;
 }
 
+function validateRepoPathKey(key: string): boolean {
+  if (key === '' || key.includes('\0') || key.includes('\\') || key.startsWith('/')) return false;
+  const parts = key.split('/');
+  if (parts.some((part) => part === '' || part === '.' || part === '..' || part === '.git')) return false;
+  return path.posix.normalize(key) === key;
+}
+
 function validatePathMap(value: unknown): value is Record<string, PathFingerprint> {
   if (!objectRecord(value)) return false;
   for (const [key, item] of Object.entries(value)) {
-    if (key === '' || key.includes('\0') || key.includes('\\') || key.startsWith('/') || key.split('/').includes('..') || key.split('/').includes('.git')) return false;
+    if (!validateRepoPathKey(key)) return false;
     if (!validateFingerprint(item)) return false;
   }
   return true;
@@ -422,7 +431,7 @@ function validatePathMap(value: unknown): value is Record<string, PathFingerprin
 function validateIndexMap(value: unknown): value is Record<string, IndexFingerprint> {
   if (!objectRecord(value)) return false;
   for (const [key, item] of Object.entries(value)) {
-    if (key === '' || key.includes('\0') || key.includes('\\') || key.startsWith('/') || key.split('/').includes('..') || key.split('/').includes('.git')) return false;
+    if (!validateRepoPathKey(key)) return false;
     if (!objectRecord(item)) return false;
     if (Object.keys(item).sort().join('\0') !== 'mode\0object\0stage') return false;
     if (typeof item.mode !== 'string' || !/^[0-7]{6}$/.test(item.mode)) return false;
@@ -430,6 +439,16 @@ function validateIndexMap(value: unknown): value is Record<string, IndexFingerpr
     if (item.stage !== '0') return false;
   }
   return true;
+}
+
+export function validateManagedFiles(value: unknown): asserts value is ManagedFiles {
+  if (!objectRecord(value)) throw new Error('Invalid managed files: expected object.');
+  for (const [key, item] of Object.entries(value)) {
+    if (!validateRepoPathKey(key)) throw new Error(`Invalid managed file path: ${key}`);
+    if (!validateFingerprint(item) || item.kind !== 'file') {
+      throw new Error(`Invalid managed file fingerprint for ${key}: expected regular file.`);
+    }
+  }
 }
 
 export function validateBaseline(value: unknown): asserts value is Baseline {
@@ -505,8 +524,9 @@ export async function captureBaseline(root: string, scope: ScopeEntry[]): Promis
   };
 }
 
-export async function inspectRun(baseline: Baseline, scope: ScopeEntry[]): Promise<Inspection> {
+export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], managedFiles: ManagedFiles = {}): Promise<Inspection> {
   validateBaseline(baseline);
+  validateManagedFiles(managedFiles);
   const root = await realpath(baseline.root);
   const foundRoot = await findRoot(root);
   const errors: string[] = [];
@@ -532,11 +552,13 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[]): Promi
     ...Object.keys(baseline.dirty),
     ...currentTrackedPaths,
     ...currentStatusPaths,
+    ...Object.keys(managedFiles),
   ]);
 
   const changedPaths: string[] = [];
   const fingerprints: Record<string, PathFingerprint> = Object.create(null);
   const changedSet = new Set<string>();
+  const managedExactSet = new Set<string>();
   const rootReal = await realpath(root);
 
   for (const filePath of candidatePaths) {
@@ -553,6 +575,15 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[]): Promi
       }
     }
 
+    const hasManagedExpected = Object.prototype.hasOwnProperty.call(managedFiles, filePath);
+    const managedAuth = hasManagedExpected && !pathEscapes ? await canonicalPathTargets(rootReal, filePath, current) : undefined;
+    const managedExact = hasManagedExpected && !pathEscapes && managedAuth?.escapes === false
+      && managedAuth.targets.every(target => target === filePath) && sameFingerprint(managedFiles[filePath], current);
+    if (managedExact) managedExactSet.add(filePath);
+    if (hasManagedExpected && !managedExact) {
+      errors.push(`managed-file-changed: ${filePath}`);
+    }
+
     const wasDirtyAtBaseline = Object.prototype.hasOwnProperty.call(baseline.dirty, filePath);
     const wasTrackedAtBaseline = Object.prototype.hasOwnProperty.call(baseline.tracked, filePath);
     const changedSinceBaseline = wasTrackedAtBaseline
@@ -563,9 +594,10 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[]): Promi
 
     const indexChangedForBaselineDirty = wasDirtyAtBaseline
       && stableDigest(Object.hasOwn(baseline.index, filePath) ? baseline.index[filePath] : null) !== stableDigest(currentIndex[filePath] ?? null);
+    const managedChangeAllowed = managedExact && changedSinceBaseline;
 
     if (!changedSinceBaseline && !pathEscapes) {
-      if (indexChangedForBaselineDirty) errors.push(`baseline-dirty-index-changed: ${filePath}`);
+      if (indexChangedForBaselineDirty && !managedChangeAllowed) errors.push(`baseline-dirty-index-changed: ${filePath}`);
       continue;
     }
 
@@ -575,10 +607,10 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[]): Promi
       fingerprints[filePath] = current;
     }
 
-    if (wasDirtyAtBaseline && changedSinceBaseline) {
+    if (wasDirtyAtBaseline && changedSinceBaseline && !managedChangeAllowed) {
       errors.push(`baseline-dirty-changed: ${filePath}`);
     }
-    if (indexChangedForBaselineDirty) {
+    if (indexChangedForBaselineDirty && !managedChangeAllowed) {
       errors.push(`baseline-dirty-index-changed: ${filePath}`);
     }
 
@@ -586,9 +618,11 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[]): Promi
     if (auth.escapes) {
       errors.push(`symlink-escape: ${filePath}`);
     }
-    for (const target of auth.targets) {
-      if (!matchesScope(target, scope)) {
-        errors.push(target === filePath ? `out-of-scope: ${filePath}` : `out-of-scope-target: ${filePath} -> ${target}`);
+    if (!managedExact) {
+      for (const target of auth.targets) {
+        if (!matchesScope(target, scope)) {
+          errors.push(target === filePath ? `out-of-scope: ${filePath}` : `out-of-scope-target: ${filePath} -> ${target}`);
+        }
       }
     }
   }
@@ -610,9 +644,11 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[]): Promi
     }
     const auth = pathEscapes ? { targets: [filePath], escapes: true } : await canonicalPathTargets(rootReal, filePath, current);
     if (auth.escapes) errors.push(`symlink-escape: ${filePath}`);
-    const allowed = changedSet.has(filePath) && !auth.escapes && auth.targets.every((target) => matchesScope(target, scope));
+    const inScopeAllowed = auth.targets.every((target) => matchesScope(target, scope));
+    const managedAllowed = managedExactSet.has(filePath);
+    const allowed = changedSet.has(filePath) && !auth.escapes && (inScopeAllowed || managedAllowed);
     const wasDirtyAtBaseline = Object.prototype.hasOwnProperty.call(baseline.dirty, filePath);
-    if (wasDirtyAtBaseline) {
+    if (wasDirtyAtBaseline && !managedAllowed) {
       errors.push(`baseline-dirty-index-changed: ${filePath}`);
     } else if (!allowed) {
       errors.push(`staged change is not allowed: ${filePath}`);

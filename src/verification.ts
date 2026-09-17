@@ -1,4 +1,4 @@
-import { inspectRun as inspectGitRun, type Baseline, type Inspection } from "./git.ts";
+import { inspectRun as inspectGitRun, type Baseline, type Inspection, type ManagedFiles } from "./git.ts";
 import { verificationDigest } from "./digest.ts";
 import type { ControlTask } from "./backlog.ts";
 import type { ScopeEntry } from "./paths.ts";
@@ -22,6 +22,7 @@ export interface VerificationInput {
   baseline: Baseline;
   task: ControlTask;
   scope: ScopeEntry[];
+  managedFiles?: ManagedFiles;
   shell: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -33,7 +34,7 @@ export type RunnerDependency =
 
 export interface VerificationDeps {
   runner?: RunnerDependency;
-  inspectRun?: (baseline: Baseline, scope: ScopeEntry[]) => Inspection | Promise<Inspection>;
+  inspectRun?: (baseline: Baseline, scope: ScopeEntry[], managedFiles?: ManagedFiles) => Inspection | Promise<Inspection>;
   now?: () => Date;
   verificationDigest?: (
     baseline: Baseline,
@@ -76,7 +77,7 @@ export async function runVerification(input: VerificationInput, deps: Verificati
   const repoRoot = repoRootFromBaseline(input.baseline);
   const commands = input.task.verificationCommands;
 
-  const before = await inspectRun(input.baseline, input.scope);
+  const before = await inspectRun(input.baseline, input.scope, input.managedFiles);
   const commandResults: CommandResult[] = [];
 
   let stopForCancellation = input.signal?.aborted === true;
@@ -98,7 +99,7 @@ export async function runVerification(input: VerificationInput, deps: Verificati
     if (result.cancelled) stopForCancellation = true;
   }
 
-  const after = await inspectRun(input.baseline, input.scope);
+  const after = await inspectRun(input.baseline, input.scope, input.managedFiles);
   const mutated = before.contentDigest !== after.contentDigest;
   const inspection = after;
   const errors = commandResults.map(commandError).filter((error): error is string => error !== null);

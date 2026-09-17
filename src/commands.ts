@@ -1,10 +1,10 @@
 import { resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { loadTask, type ControlTask } from './backlog.js';
+import { loadTask, requireAutoCommitDisabled, assertClaimable, claimTask, type ControlTask } from './backlog.js';
 import { prepareCommitGuard } from './commit-guard.js';
 import { defaults, loadConfig, type PiControlConfig } from './config.js';
-import { findRoot, captureBaseline, inspectRun, git, type Inspection } from './git.js';
+import { findRoot, captureBaseline, inspectRun, fingerprintPath, git, type Inspection } from './git.js';
 import { compileScope, canonicalPath, matchesScope } from './paths.js';
 import { stableDigest, verificationDigest } from './digest.js';
 import { runVerification } from './verification.js';
@@ -108,9 +108,11 @@ export class ControlController {
   private async refresh(ctx: ExtensionContext): Promise<Inspection> {
     const run = this.active();
     try {
+      if (run.claimPending) throw new Error(`Claiming ${run.task.id} did not complete. Inspect the Backlog task, /control-abort, then retry /implement. No implementation was dispatched.`);
       if (await findRoot(ctx.cwd) !== run.baseline.root || await realpath(run.baseline.root) !== run.baseline.root) throw new Error('Repository root changed. Return to the captured repository or /control-abort.');
+      await requireAutoCommitDisabled(run.baseline.root, this.pi.exec.bind(this.pi));
       await this.taskUnchanged(run);
-      const current = await inspectRun(run.baseline, effectiveScope(run));
+      const current = await inspectRun(run.baseline, effectiveScope(run), run.managedFiles);
       if ((run.phase === 'VERIFIED' || run.phase === 'WAIVED') && (!current.scopeOk || !run.latest || this.digest(run, current) !== run.latest.digest)) { staleRun(run); this.persist(); }
       return current;
     } catch (e) { staleRun(run); this.persist(); throw e; }
@@ -119,15 +121,48 @@ export class ControlController {
     if (isActive(this.run)) throw new Error(`${this.run.task.id} is already active. Use /control-abort before starting another run.`);
     const id = args.trim();
     if (!id || /\s/.test(id)) throw new Error('Usage: /implement <task-id>');
+    const generation = this.generation;
     const root = await findRoot(ctx.cwd);
     this.config = await loadConfig(root, this.configDirectory, ctx.isProjectTrusted());
+    await requireAutoCommitDisabled(root, this.pi.exec.bind(this.pi));
     const task: ControlTask = await this.taskLoader(root, id, this.pi.exec.bind(this.pi));
+    const lifecycle = assertClaimable(task, this.config);
+    if (await canonicalPath(root, lifecycle.path) !== lifecycle.path) throw new Error('Backlog task path must name a regular file without symlinks.');
     const scope = await compileScope(root, task.allowedScope);
     const baseline = await captureBaseline(root, scope);
-    this.run = createRun(task, baseline, scope, this.config.maxRepairAttempts);
+    const before = baseline.dirty[lifecycle.path] ?? baseline.tracked[lifecycle.path];
+    if (!before || before.kind !== 'file') throw new Error('Backlog task file must be a Git-visible regular file. Remove its ignore rule or track it before /implement.');
+    if (generation !== this.generation) throw new Error('Session changed before the task could be claimed.');
+    const run = createRun(task, baseline, scope, this.config.maxRepairAttempts);
+    run.phase = 'FAILED';
+    run.pendingAutomatic = false;
+    run.claimPending = true;
+    run.managedFiles = { [lifecycle.path]: before };
+    this.run = run;
     this.persist();
-    this.notify(ctx, `${task.id}: ${task.title}\nScope: ${scope.map(s => quote(s.text)).join(', ')}\nChecks:\n${task.verificationCommands.join('\n')}\nRepair limit: ${this.run.maxRepairAttempts}`);
-    this.pi.sendUserMessage(implementationPrompt(this.run), { deliverAs: 'followUp' });
+    try {
+      const claimed = await claimTask(root, task, this.config, this.pi.exec.bind(this.pi));
+      if (generation !== this.generation) throw new Error('Session changed while claiming the task.');
+      const fingerprint = await fingerprintPath(root, lifecycle.path);
+      if (fingerprint.kind !== 'file' || await canonicalPath(root, lifecycle.path) !== lifecycle.path) throw new Error('Backlog task path changed while claiming it.');
+      run.task = claimed;
+      run.managedFiles = { [lifecycle.path]: fingerprint };
+      const current = await inspectRun(baseline, scope, run.managedFiles);
+      if (!current.scopeOk || current.changedPaths.some(p => p !== lifecycle.path) || current.stagedPaths.length) {
+        throw new Error(`Repository changed unexpectedly while claiming the task:\n${current.errors.join('\n')}\nChanged paths: ${current.changedPaths.map(quote).join(', ')}`);
+      }
+      await requireAutoCommitDisabled(root, this.pi.exec.bind(this.pi));
+      if (generation !== this.generation) throw new Error('Session changed while claiming the task.');
+      run.claimPending = false;
+      run.phase = 'IMPLEMENTING';
+      run.pendingAutomatic = true;
+      this.persist();
+      this.notify(ctx, `${task.id}: ${task.title}\nClaimed by ${claimed.lifecycle!.assignees.join(', ')}; status: ${claimed.lifecycle!.status}\nController-managed task file: ${quote(lifecycle.path)}\nScope: ${scope.map(s => quote(s.text)).join(', ')}\nChecks:\n${task.verificationCommands.join('\n')}\nRepair limit: ${run.maxRepairAttempts}`);
+      this.pi.sendUserMessage(implementationPrompt(run), { deliverAs: 'followUp' });
+    } catch (e) {
+      if (generation === this.generation && this.run === run) { run.phase = 'FAILED'; run.pendingAutomatic = false; run.claimPending = true; this.persist(); }
+      throw new Error(`Could not start ${task.id}: ${message(e)} The Backlog task may have changed. No rollback was attempted. Inspect it, then /control-abort before retrying.`);
+    }
   }
   private async resume(args: string, ctx: ExtensionContext): Promise<void> {
     const run = this.match(args, false);
@@ -159,7 +194,9 @@ export class ControlController {
     beginVerification(run);
     this.persist();
     try {
-      const result = await this.verifier({ baseline: run.baseline, task: run.task, scope: effectiveScope(run), shell: this.config.shell, timeoutMs: this.config.verificationTimeoutMs, signal });
+      const result = await this.verifier({ baseline: run.baseline, task: run.task, scope: effectiveScope(run), managedFiles: run.managedFiles, shell: this.config.shell, timeoutMs: this.config.verificationTimeoutMs, signal });
+      if (generation !== this.generation) return;
+      await requireAutoCommitDisabled(run.baseline.root, this.pi.exec.bind(this.pi));
       if (generation !== this.generation) return;
       const action = finishVerification(run, result, automatic && !signal.aborted);
       this.persist();
@@ -190,7 +227,7 @@ export class ControlController {
   private async showScope(ctx: ExtensionContext): Promise<void> {
     const run = this.active();
     await this.refresh(ctx);
-    this.notify(ctx, `${run.task.id}\nBacklog scope:\n${run.originalScope.map(s => `${s.kind}: ${quote(s.text)}`).join('\n')}\nUser additions:\n${run.additions.map(a => `${a.entry.kind}: ${quote(a.entry.text)} ${a.timestamp}`).join('\n') || 'none'}`);
+    this.notify(ctx, `${run.task.id}\nBacklog scope:\n${run.originalScope.map(s => `${s.kind}: ${quote(s.text)}`).join('\n')}\nUser additions:\n${run.additions.map(a => `${a.entry.kind}: ${quote(a.entry.text)} ${a.timestamp}`).join('\n') || 'none'}\nController-managed claim files, read-only to the agent:\n${Object.keys(run.managedFiles ?? {}).map(quote).join('\n') || 'none'}`);
   }
   private async expandScope(args: string, ctx: ExtensionContext): Promise<void> {
     const run = this.active();
@@ -214,14 +251,14 @@ export class ControlController {
     const run = this.run;
     const current = await this.refresh(ctx);
     const fresh = !!run.latest && current.scopeOk && this.digest(run, current) === run.latest.digest;
-    this.notify(ctx, `${run.task.id}: ${run.phase}${run.restored ? ' restored, paused' : ''}\nBaseline: ${run.baseline.head}\nScope: ${effectiveScope(run).map(s => quote(s.text)).join(', ')}\nRepairs: ${run.repairs}/${run.maxRepairAttempts}\nLatest: ${run.latest ? `${run.latest.passed ? 'PASS' : 'FAIL'}, ${fresh ? 'current' : 'stale'}` : 'none'}\n${current.errors.join('\n')}`);
+    this.notify(ctx, `${run.task.id}: ${run.phase}${run.restored ? ' restored, paused' : ''}\nBacklog claim: ${run.task.lifecycle ? `${run.task.lifecycle.status}, ${run.task.lifecycle.assignees.join(', ')}` : 'legacy run'}\nBaseline: ${run.baseline.head}\nScope: ${effectiveScope(run).map(s => quote(s.text)).join(', ')}\nRepairs: ${run.repairs}/${run.maxRepairAttempts}\nLatest: ${run.latest ? `${run.latest.passed ? 'PASS' : 'FAIL'}, ${fresh ? 'current' : 'stale'}` : 'none'}\n${current.errors.join('\n')}`);
   }
   private async abort(ctx: ExtensionContext): Promise<void> {
     const run = this.active();
     await this.confirmed(ctx, `Abort ${run.task.id}?`, 'End scope enforcement without reverting files. Repository changes remain in place.');
     run.phase = 'ABORTED'; run.pendingAutomatic = false;
     this.persist();
-    this.notify(ctx, `${run.task.id}: ABORTED. Repository changes remain in place.`);
+    this.notify(ctx, `${run.task.id}: ABORTED. Repository changes and any Backlog claim remain in place.`);
   }
   private commitEligible(run: ImplementationRun, current: Inspection): void {
     if (!['VERIFIED', 'WAIVED'].includes(run.phase) || !run.latest || this.digest(run, current) !== run.latest.digest) throw new Error('Commit requires current VERIFIED or WAIVED state. Run /verify.');
@@ -248,7 +285,9 @@ export class ControlController {
     if (commitMessage.includes('\0')) throw new Error('Commit message cannot contain NUL.');
     const paths = current.changedPaths;
     const digest = this.digest(run, current);
-    await this.confirmed(ctx, run.phase === 'WAIVED' ? `Commit ${run.task.id} WITH FAILED CHECKS?` : `Commit ${run.task.id}?`, `${run.phase}\n${run.waiver && run.phase === 'WAIVED' ? `Waiver reason: ${run.waiver.reason}\nFailed checks: ${run.waiver.failedCommands.join(', ')}\n` : ''}Paths:\n${paths.map(quote).join('\n')}\nMessage: ${commitMessage}`);
+    const managed = paths.filter(p => Object.hasOwn(run.managedFiles ?? {}, p));
+    const metadataNotice = managed.length ? `\nController-managed Backlog claim: ${managed.map(quote).join(', ')}.${managed.some(p => Object.hasOwn(run.baseline.dirty, p)) ? ' This task file was already uncommitted at start; the commit includes its full current contents.' : ''}` : '';
+    await this.confirmed(ctx, run.phase === 'WAIVED' ? `Commit ${run.task.id} WITH FAILED CHECKS?` : `Commit ${run.task.id}?`, `${run.phase}\n${run.waiver && run.phase === 'WAIVED' ? `Waiver reason: ${run.waiver.reason}\nFailed checks: ${run.waiver.failedCommands.join(', ')}\n` : ''}Paths:\n${paths.map(quote).join('\n')}${metadataNotice}\nMessage: ${commitMessage}`);
     const afterConfirmation = await this.refresh(ctx);
     this.commitEligible(run, afterConfirmation);
     if (this.digest(run, afterConfirmation) !== digest || !samePaths(paths, afterConfirmation.changedPaths)) throw new Error('Repository changed during confirmation. Run /verify.');
@@ -274,7 +313,7 @@ export class ControlController {
       run.commitSha = sha;
       run.phase = 'COMMITTED'; run.pendingAutomatic = false;
       this.persist();
-      this.notify(ctx, `${run.task.id}: COMMITTED ${run.commitSha}. No push or Backlog status change.`);
+      this.notify(ctx, `${run.task.id}: COMMITTED ${run.commitSha}. No push or Backlog task closure.`);
     } catch (e) {
       try { await this.refresh(ctx); } catch { staleRun(run); this.persist(); }
       throw e;
@@ -289,6 +328,7 @@ export class ControlController {
       if (typeof input !== 'string') throw new Error('Missing file path.');
       const supplied = input.startsWith('@') ? input.slice(1) : input;
       const canonical = await canonicalPath(run.baseline.root, supplied);
+      if (Object.hasOwn(run.managedFiles ?? {}, canonical)) throw new Error('The Backlog task file is controller-managed and cannot be edited by the agent.');
       if (!matchesScope(canonical, effectiveScope(run))) throw new Error('Path is outside task scope.');
       // Built-in tools use the session cwd. Pin execution to the root we checked.
       event.input.path = resolve(run.baseline.root, canonical);

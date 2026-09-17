@@ -4,7 +4,7 @@ import { isActive } from './state.js';
 import { registerPlanHandoff } from './plannotator.js';
 
 const commands: Record<string, string> = {
-  implement: 'Implement one Backlog task with scope enforcement and bounded repairs',
+  implement: 'Claim and implement one Backlog task with scope enforcement and bounded repairs',
   'implement-resume': 'Resume a failed or restored task with a fresh repair budget',
   verify: 'Verify the active task without automatic repair',
   'verify-waive': 'Confirm a reasoned waiver of current failed command checks',

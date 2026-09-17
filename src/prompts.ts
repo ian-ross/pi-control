@@ -7,6 +7,8 @@ export function implementationPrompt(run: ImplementationRun): string {
     `Implement only ${run.task.id}: ${run.task.title}`,
     `Repository root: ${run.baseline.root}`,
     run.task.description ?? '',
+    ...managedTask(run),
+    ...taskPlan(run),
     'Acceptance criteria:', ...run.task.acceptanceCriteria.map(c => `- ${c}`),
     'Allowed scope entries, exactly as approved:', ...effectiveScope(run).map(s => `- ${s.text}`),
     'Exact verification commands:', ...run.task.verificationCommands.map(c => `\n${c}`),
@@ -22,6 +24,8 @@ export function repairPrompt(run: ImplementationRun): string {
   const r = run.latest!;
   return [
     `Repair ${run.task.id}. Automatic repair ${run.repairs}/${run.maxRepairAttempts}. Remaining repair turns after this one: ${run.maxRepairAttempts - run.repairs}.`,
+    ...managedTask(run),
+    ...taskPlan(run),
     'Scope failures:', ...r.scopeErrors,
     'Verification errors:', ...r.errors,
     ...r.commands.filter(c => c.code !== 0 || c.timedOut || c.cancelled).map(c => [
@@ -31,4 +35,12 @@ export function repairPrompt(run: ImplementationRun): string {
     'Do not commit, modify Backlog or workflow state, waive checks, or broaden scope. The extension will rerun verification. If a failure needs a human decision, stop and explain it.',
   ].join('\n');
 }
+function managedTask(run: ImplementationRun): string[] {
+  return Object.keys(run.managedFiles ?? {}).map(path => `Controller-managed Backlog task file: ${path}. Do not edit it, even if a scope pattern matches. The extension already claimed this task and will handle committing the claim.`);
+}
+
+function taskPlan(run: ImplementationRun): string[] {
+  return run.task.implementationPlan ? ['Task implementation plan:', run.task.implementationPlan] : [];
+}
+
 export const recovery = 'Next: /verify, /implement-resume, /scope-add, /verify-waive for eligible command failures, or /control-abort.';

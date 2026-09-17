@@ -4,7 +4,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { compileScope } from '../src/paths.ts';
-import { captureBaseline, findRoot, git, inspectRun, validateBaseline } from '../src/git.ts';
+import { captureBaseline, findRoot, fingerprintPath, git, inspectRun, validateBaseline, validateManagedFiles } from '../src/git.ts';
 import { makeTempRepo } from './helpers.ts';
 
 test('findRoot locates the repository root and git helper rejects mutations', async () => {
@@ -393,6 +393,193 @@ test('dangling symlink targets through escaping symlink parents are reported', a
     assert.match(inspection.errors.join('\n'), /symlink-escape: src\/newlink/);
   } finally {
     await rm(outside, { recursive: true, force: true });
+    await repo.cleanup();
+  }
+});
+
+test('managed file exact match permits outside-scope claim edits and fingerprints them', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('src/a.txt', 'one');
+    await repo.write('Backlog/tasks/task-1.md', 'claimed: false\n');
+    await repo.commitAll();
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+
+    await repo.write('Backlog/tasks/task-1.md', 'claimed: true\n');
+    const expected = await fingerprintPath(repo.root, 'Backlog/tasks/task-1.md');
+    const inspection = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected });
+
+    assert.equal(inspection.scopeOk, true);
+    assert.deepEqual(inspection.errors, []);
+    assert.deepEqual(inspection.changedPaths, ['Backlog/tasks/task-1.md']);
+    assert.deepEqual(inspection.fingerprints['Backlog/tasks/task-1.md'], expected);
+    assert.match(inspection.contentDigest, /^[a-f0-9]{64}$/);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+test('managed files may start dirty or untracked at baseline and still move to the exact claim fingerprint', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('src/a.txt', 'one');
+    await repo.write('Backlog/tasks/tracked.md', 'draft\n');
+    await repo.commitAll();
+    await repo.write('Backlog/tasks/tracked.md', 'local draft\n');
+    await repo.write('Backlog/tasks/untracked.md', 'local draft\n');
+
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+
+    await repo.write('Backlog/tasks/tracked.md', 'claimed tracked\n');
+    await repo.write('Backlog/tasks/untracked.md', 'claimed untracked\n');
+    const trackedExpected = await fingerprintPath(repo.root, 'Backlog/tasks/tracked.md');
+    const untrackedExpected = await fingerprintPath(repo.root, 'Backlog/tasks/untracked.md');
+    const inspection = await inspectRun(baseline, scope, {
+      'Backlog/tasks/tracked.md': trackedExpected,
+      'Backlog/tasks/untracked.md': untrackedExpected,
+    });
+
+    assert.equal(inspection.scopeOk, true);
+    assert.deepEqual(inspection.errors, []);
+    assert.deepEqual(inspection.changedPaths, ['Backlog/tasks/tracked.md', 'Backlog/tasks/untracked.md']);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+test('staging an exact managed file is allowed only when the file changed since baseline', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('src/a.txt', 'one');
+    await repo.write('Backlog/tasks/task-1.md', 'claimed: false\n');
+    await repo.commitAll();
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+
+    await repo.write('Backlog/tasks/task-1.md', 'claimed: true\n');
+    const expected = await fingerprintPath(repo.root, 'Backlog/tasks/task-1.md');
+    const beforeStage = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected });
+    await repo.git(['add', 'Backlog/tasks/task-1.md']);
+    const afterStage = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected });
+
+    assert.equal(afterStage.scopeOk, true);
+    assert.deepEqual(afterStage.errors, []);
+    assert.deepEqual(afterStage.stagedPaths, ['Backlog/tasks/task-1.md']);
+    assert.equal(beforeStage.contentDigest, afterStage.contentDigest);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+test('staging an unchanged managed baseline-dirty file is refused', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('src/a.txt', 'one');
+    await repo.write('Backlog/tasks/task-1.md', 'baseline\n');
+    await repo.commitAll();
+    await repo.write('Backlog/tasks/task-1.md', 'local draft\n');
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+    const expected = await fingerprintPath(repo.root, 'Backlog/tasks/task-1.md');
+
+    await repo.git(['add', 'Backlog/tasks/task-1.md']);
+    const inspection = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected });
+
+    assert.equal(inspection.scopeOk, false);
+    assert.match(inspection.errors.join('\n'), /staged change is not allowed: Backlog\/tasks\/task-1\.md/);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+test('managed file mutation, deletion, and revert to baseline are refused', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('src/task.md', 'baseline\n');
+    await repo.commitAll();
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+
+    await repo.write('src/task.md', 'claimed\n');
+    const expected = await fingerprintPath(repo.root, 'src/task.md');
+
+    await repo.write('src/task.md', 'mutated\n');
+    let inspection = await inspectRun(baseline, scope, { 'src/task.md': expected });
+    assert.equal(inspection.scopeOk, false);
+    assert.match(inspection.errors.join('\n'), /managed-file-changed: src\/task\.md/);
+
+    await rm(`${repo.root}/src/task.md`);
+    inspection = await inspectRun(baseline, scope, { 'src/task.md': expected });
+    assert.equal(inspection.scopeOk, false);
+    assert.match(inspection.errors.join('\n'), /managed-file-changed: src\/task\.md/);
+
+    await repo.write('src/task.md', 'baseline\n');
+    inspection = await inspectRun(baseline, scope, { 'src/task.md': expected });
+    assert.equal(inspection.scopeOk, false);
+    assert.match(inspection.errors.join('\n'), /managed-file-changed: src\/task\.md/);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+test('managed file authorization does not exempt other Backlog files', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('src/a.txt', 'one');
+    await repo.write('Backlog/tasks/task-1.md', 'claimed: false\n');
+    await repo.write('Backlog/tasks/task-2.md', 'claimed: false\n');
+    await repo.commitAll();
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+
+    await repo.write('Backlog/tasks/task-1.md', 'claimed: true\n');
+    await repo.write('Backlog/tasks/task-2.md', 'claimed: true\n');
+    const expected = await fingerprintPath(repo.root, 'Backlog/tasks/task-1.md');
+    const inspection = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected });
+
+    assert.equal(inspection.scopeOk, false);
+    assert.match(inspection.errors.join('\n'), /out-of-scope: Backlog\/tasks\/task-2\.md/);
+    assert.doesNotMatch(inspection.errors.join('\n'), /out-of-scope: Backlog\/tasks\/task-1\.md/);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+test('managed metadata cannot be redirected through an internal directory symlink', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('backlog/tasks/task.md', 'before');
+    await repo.write('other/task.md', 'claimed');
+    await repo.commitAll();
+    const scope = await compileScope(repo.root, ['**']);
+    const baseline = await captureBaseline(repo.root, scope);
+    await repo.write('backlog/tasks/task.md', 'claimed');
+    const expected = await fingerprintPath(repo.root, 'backlog/tasks/task.md');
+    await rm(path.join(repo.root, 'backlog/tasks'), { recursive: true });
+    await repo.symlink('../other', 'backlog/tasks');
+    const result = await inspectRun(baseline, scope, { 'backlog/tasks/task.md': expected });
+    assert.equal(result.scopeOk, false);
+    assert.match(result.errors.join('\n'), /managed-file-changed: backlog\/tasks\/task.md/);
+  } finally { await repo.cleanup(); }
+});
+
+test('managed file maps reject malformed paths and non-file fingerprints', async () => {
+  const repo = await makeTempRepo();
+  try {
+    await repo.write('src/a.txt', 'one');
+    await repo.commitAll();
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+    const fingerprint = await fingerprintPath(repo.root, 'src/a.txt');
+
+    assert.doesNotThrow(() => validateManagedFiles({ 'src/a.txt': fingerprint }));
+    assert.throws(() => validateManagedFiles({ '../src/a.txt': fingerprint }), /managed/i);
+    assert.throws(() => validateManagedFiles({ './src/a.txt': fingerprint }), /managed/i);
+    assert.throws(() => validateManagedFiles({ 'src/a.txt': { kind: 'absent' } }), /regular file/i);
+    await assert.rejects(() => inspectRun(baseline, scope, { 'src/a.txt': { kind: 'absent' } }), /regular file/i);
+  } finally {
     await repo.cleanup();
   }
 });

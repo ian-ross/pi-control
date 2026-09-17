@@ -4,6 +4,75 @@
 
 It is not a sandbox. It is a workflow guard and verifier.
 
+## Preparation
+
+### Install tools and extensions
+
+Set up [Backlog](https://github.com/MrLesk/Backlog.md).
+
+Install the following extensions:
+
+```
+mkdir -p .pi
+pi install -l npm:@plannotator/pi-extension
+pi install -l npm:pi-rules
+pi install -l git:github.com/earendil-works/pi-review
+pi install -l npm:pi-answer@0.1.4
+```
+
+and install this extension.
+
+### Configure Plannotator
+
+Create `.pi/plannotator.json` with the following content:
+
+```json
+{
+  "executionMode": "external",
+  "defaults": {
+    "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+    "thinking": "medium",
+    "activeTools": ["read", "bash"],
+    "statusLabel": "Ready",
+    "instructions": "Optional phase-entry message template"
+  },
+  "phases": {
+    "planning": {
+      "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+      "thinking": "high",
+      "activeTools": ["grep", "find", "ls", "plannotator_submit_plan"],
+      "statusLabel": "⏸ plan",
+      "instructions": "[PLANNING]\nPlan file: ${planFilePath}\n\nInterview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.\n\nAsk the questions one at a time.\n\nIf a question can be answered by exploring the codebase, explore the codebase instead.\n\nDo not expand scope beyond request without asking. Respect requests to proceed incrementally: allow me to defer decisions to a later iteration."
+    }
+  }
+}
+```
+
+For readability and editability, the planning prompt above is:
+
+```
+[PLANNING]
+Plan file: ${planFilePath}
+
+Interview me relentlessly about every aspect of this plan until we reach a
+shared understanding. Walk down each branch of the design tree, resolving
+dependencies between decisions one-by-one. For each question, provide your
+recommended answer.
+
+Ask the questions one at a time.
+
+If a question can be answered by exploring the codebase, explore the codebase
+instead.
+
+Do not expand scope beyond request without asking. Respect requests to proceed
+incrementally: allow me to defer decisions to a later iteration.
+```
+
+### Generate rules
+
+Use a coding agent to generate `pi-rules` rules for the codebase.
+
+
 ## Supported setup
 
 Tested against the installed APIs here:
@@ -22,8 +91,8 @@ The package requires Node 22+. The implementation and unit tests were built agai
 Prerequisites:
 
 - A Git repository.
-- `backlog` on `PATH`.
-- Backlog tasks with explicit `modifiedFiles` and `Verification:` Definition of Done entries.
+- `backlog` on `PATH`, with an initialized Backlog project and auto-commit disabled.
+- Backlog tasks with explicit `modifiedFiles`, a non-empty `implementationPlan`, and `Verification:` Definition of Done entries.
 - Pi project trust if you want to load `.pi/pi-control.json`.
 - Plannotator configured for external execution if you want approved plans handed to `plan-to-backlog`.
 
@@ -54,6 +123,23 @@ Loading only `src/index.ts` does not load the bundled skill. Use the package dir
 
 ## Configuration
 
+### Backlog auto-commit
+
+Disable Backlog auto-commit before starting a controlled run or generating tasks:
+
+```bash
+backlog config set autoCommit false
+backlog config get autoCommit
+```
+
+The second command must print `false`. This is a Backlog project setting, not a field in `.pi/pi-control.json`.
+
+`pi-control` checks it before `/implement` and automatic plan handoff, and rechecks it during verification, resume, and commit eligibility checks. Enabled, unreadable, or unexpected values block the operation. A blocked handoff preserves the approved plan without starting task generation. After fixing the setting, invoke `/skill:plan-to-backlog` with that approved plan explicitly; it is not retried automatically.
+
+The extension never changes this setting, commits the configuration change, or accepts an unexpected `HEAD` change. Set it before starting a run. Later configuration edits remain subject to the normal scope and baseline checks. The skill also checks the prerequisite before task writes. These checks do not intercept arbitrary Backlog commands issued through Bash or another terminal.
+
+### pi-control settings
+
 Project config lives at:
 
 ```text
@@ -67,7 +153,10 @@ Defaults:
   "maxRepairAttempts": 2,
   "verificationTimeoutMs": 120000,
   "shell": "/bin/bash",
-  "autoPlanHandoff": true
+  "autoPlanHandoff": true,
+  "claimAssignee": "@pi-control",
+  "readyStatus": "To Do",
+  "inProgressStatus": "In Progress"
 }
 ```
 
@@ -77,6 +166,8 @@ Validation:
 - `verificationTimeoutMs` must be a positive integer no greater than 2147483647.
 - `shell` must be an absolute path without NUL bytes.
 - `autoPlanHandoff` must be boolean.
+- `claimAssignee` names one Backlog assignee. An omitted leading `@` is added. Letters, digits, dots, underscores, and hyphens are accepted.
+- `readyStatus` and `inProgressStatus` must be distinct, non-empty status names without control characters. Use names from your Backlog project.
 - Unknown fields are rejected.
 
 If `.pi/pi-control.json` exists, the project must be trusted before `pi-control` loads it. Without the file, the defaults apply.
@@ -117,7 +208,9 @@ The skill is shipped in this package at:
 skills/plan-to-backlog/SKILL.md
 ```
 
-Loaded skill availability is enough. `pi-control` checks for the loaded `skill:plan-to-backlog` command and does not check an `enableSkillCommands` setting. The handoff creates or updates Backlog tasks only. It does not start `/implement`.
+Loaded skill availability is enough. `pi-control` checks for the loaded `skill:plan-to-backlog` command and does not check an `enableSkillCommands` setting. The skill sets `disable-model-invocation: true`, so Pi does not advertise it for the model to select during planning. Explicit invocation and the approved-plan handoff still work.
+
+The handoff creates or updates Backlog tasks only. It requires a task-local implementation plan for every task and instructs the agent to verify the saved field through CLI JSON. It does not start `/implement`.
 
 ## Backlog task convention
 
@@ -130,6 +223,8 @@ backlog task <id> --json
 It expects Backlog 1.52.0 task-view JSON with:
 
 - `modifiedFiles` as the file whitelist.
+- A non-empty `implementationPlan` containing task-local implementation instructions.
+- The task's `path`, `status`, and `assignees` for claiming and later consistency checks.
 - `definitionOfDone` items whose text begins exactly with `Verification:`.
 - Any ordinary acceptance criteria as human criteria only.
 
@@ -153,7 +248,20 @@ backlog task create "Validate pi-control config" \
   --dod "Verification: npm run typecheck"
 ```
 
+Then attach a plan using the returned task ID, shown here as `BACK-123`:
+
+```bash
+backlog task edit BACK-123 --plan $'1. Add field validation to parseConfig in src/config.ts before accepting overrides. Keep defaults unchanged.\n2. Add cases to test/config.test.ts for invalid types, unknown fields, and valid overrides.\n3. Run npm test -- test/config.test.ts and npm run typecheck.'
+backlog task BACK-123 --json
+```
+
+Check that `task.implementationPlan` contains the saved instructions. Backlog 1.52.0 accepts `task edit --plan` while the task remains To Do. Do not change status just to attach a plan. Its create-command help recommends reserving `--plan` for already-started work; this workflow instead writes approved task-local guidance through `task edit` before implementation.
+
 Users do not author JSON by hand. The JSON shape is the CLI contract that `pi-control` reads.
+
+`/implement` rejects missing, blank, or malformed plans. It includes the full saved plan in implementation, resume, and repair prompts. Plan changes count as task-definition changes and invalidate an existing pass or waiver when rechecked.
+
+For tasks generated before this requirement, use the approved parent plan to populate the field with `backlog task edit <id> --plan <text>` and read it back. Do not use a placeholder merely to pass validation. Abort an active run before changing its task definition, then start a new run. Reload the extension and skill after updating this package.
 
 ## Commands
 
@@ -161,7 +269,7 @@ There are nine slash commands.
 
 | Command | Example | What it does |
 | --- | --- | --- |
-| `/implement <task-id>` | `/implement BACK-123` | Starts one controlled run from a Backlog task. Captures the baseline, records scope and checks, prompts the agent once, then verifies automatically when the agent settles. |
+| `/implement <task-id>` | `/implement BACK-123` | Validates the task and Git baseline, assigns the task to `claimAssignee`, and sets `inProgressStatus`. It reads the claim back before prompting the agent, then verifies automatically when the agent settles. |
 | `/implement-resume [task-id]` | `/implement-resume BACK-123` | Resumes a `FAILED` or restored run. It rechecks root, `HEAD`, baseline, task equality, and scope. It resets the automatic repair budget. |
 | `/verify [task-id]` | `/verify BACK-123` | Runs scope checks and every configured verification command. It requires an active run and its captured baseline. It never starts a repair loop. |
 | `/verify-waive <task-id> <reason>` | `/verify-waive BACK-123 upstream service unavailable` | Records a human waiver for current failed command checks. It cannot waive scope failures, changed `HEAD`, task changes, or malformed task data. |
@@ -172,6 +280,22 @@ There are nine slash commands.
 | `/commit <task-id> [message]` | `/commit BACK-123 BACK-123: validate config` | Commits the verified or waived task changes after confirmation. It does not push or close the Backlog task. |
 
 Task IDs must match the active task. A changed Backlog task definition is treated as a hard mismatch. Restore the task or abort and start a new `/implement` run.
+
+## Claiming a task
+
+By default, `/implement` claims an unassigned To Do task as `@pi-control` and moves it to In Progress. Set `claimAssignee` in `.pi/pi-control.json` to use your own Backlog identity. If your project uses different status names, set `readyStatus` and `inProgressStatus` too.
+
+The command refuses tasks assigned to someone else and tasks outside those two statuses. It does not reopen Done tasks under the default configuration. An existing In Progress claim by the same assignee needs no additional write. Resume checks the saved claim rather than reassigning it.
+
+Backlog auto-commit must stay disabled. The extension captures the original Git baseline before issuing the claim, then freezes the exact resulting task-file fingerprint. That file is controller-managed, not an addition to the agent's editable scope. A broad scope glob does not grant the agent permission to edit it. Any later task-file changes fail verification, even when the normalized task fields still look unchanged.
+
+The active task file must be a Git-visible regular file without symlinks. If `BACKLOG_CWD` is set, it must resolve to the captured repository root. Other Backlog files receive no exemption. A claim can update an already-uncommitted task file, as long as baseline validation passes. When this run's claim changes the file, `/commit` includes its full resulting contents and warns if it was already uncommitted at startup. If the task was already claimed and no write was needed, pre-existing task-file changes stay outside the commit, like other pre-existing changes the run did not modify.
+
+If claiming fails or changes unexpected files or `HEAD`, no implementation prompt is sent. The run stays paused. Inspect the task, use `/control-abort`, then retry `/implement`. Aborting does not release the claim or revert files. Claiming does not close the task on commit.
+
+Active runs saved before claiming support lack a captured claim and cannot silently resume under the new task contract. Preserve their changes before aborting, then satisfy the clean-scope baseline requirements before starting a new run.
+
+The assignee is an identity label, not a cross-session lock. Do not run concurrent writers against the same task or worktree.
 
 ## State machine and repair limit
 
@@ -216,12 +340,12 @@ At `/implement` start, `pi-control` records:
 
 It refuses to start if anything is staged. It also refuses if any pre-existing dirty tracked or untracked path matches the task scope.
 
-Dirty files outside the task scope may exist at start, but they must stay byte-for-byte and metadata equivalent. If they change later, verification fails.
+Dirty files outside the task scope may exist at start, but they must stay byte-for-byte and metadata equivalent. The only exception is the active Backlog task file changed by the controller's claim operation. Its post-claim content and mode must remain exact. Other changes fail verification.
 
 After start:
 
 - `HEAD` must stay equal to the captured commit until `/commit` succeeds.
-- Newly changed paths must match the effective scope.
+- Newly changed paths must match the effective scope or the exact controller-managed claim fingerprint.
 - Staged content is allowed only for task-changed paths after the run starts.
 - Ignored files are not counted unless they become Git-visible.
 - Verification reports all offending paths it finds, not just the first one.
@@ -292,7 +416,7 @@ These checks do not isolate malicious hooks or concurrent processes. Do not run 
 - no staged paths outside the task-changed path set;
 - interactive confirmation.
 
-It stages only changed paths that match the effective scope, including deletions. It rechecks after confirmation and staging, then compares the resulting commit against the prepared index. It uses argument-safe Git invocation, not shell interpolation. On success it records `COMMITTED` and the commit SHA. It does not push and does not mark the Backlog task done.
+It stages changed implementation paths that match the effective scope, including deletions, and the exact controller-managed task file changed by claiming. It rechecks after confirmation and staging, then compares the resulting commit against the prepared index. It uses argument-safe Git invocation, not shell interpolation. On success it records `COMMITTED` and the commit SHA. It does not push and does not mark the Backlog task done.
 
 ## Troubleshooting
 
@@ -300,7 +424,7 @@ It stages only changed paths that match the effective scope, including deletions
 
 `Backlog task scope is invalid` means a `modifiedFiles` entry is unsafe or not supported.
 
-`Backlog task definition changed` means the task JSON no longer exactly matches the task captured at `/implement`. Restore it or `/control-abort` and start over.
+`Backlog task definition changed` means the normalized task definition or claim no longer matches the task captured at `/implement`. Restore it or `/control-abort` and start over.
 
 `head-changed` means something moved `HEAD` after `/implement`. Return to the captured commit or abort.
 

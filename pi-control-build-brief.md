@@ -75,8 +75,10 @@ Code review remains the responsibility of existing review tools and the user. Ge
 
 - a Git repository;
 - the `backlog` executable on `PATH`;
+- an initialized Backlog project with auto-commit disabled. Check `backlog config get autoCommit` before controlled work or automatic task-generation handoff and accept only a successful `false` response. Recheck during verification, resume, and commit eligibility checks. Refuse enabled or unreadable settings with instructions to run `backlog config set autoCommit false`; never change the setting automatically or relax the captured `HEAD` invariant;
 - Backlog tasks generated according to the accompanying `plan-to-backlog` skill;
 - each implementation task to have explicit `modifiedFiles` entries containing file paths, directory scopes, or glob patterns;
+- each implementation task to have a non-empty `implementationPlan` with task-local instructions prepared during task generation, saved through `backlog task edit <id> --plan <text>`, and checked by reading back `task.implementationPlan` in task-view JSON;
 - deterministic Definition of Done entries whose text begins exactly with `Verification:`;
 - Plannotator configured with `"executionMode": "external"` when automatic plan handoff is wanted;
 - the `plan-to-backlog` skill installed and loaded in Pi when automatic invocation of `/skill:plan-to-backlog` is wanted. Skill availability is sufficient; the extension need not inspect `enableSkillCommands`.
@@ -94,6 +96,7 @@ interface ControlTask {
   id: string;
   title: string;
   description?: string;
+  implementationPlan: string;
   allowedScope: string[];
   verificationCommands: string[];
 }
@@ -102,6 +105,7 @@ interface ControlTask {
 The adapter must:
 
 - take `allowedScope` from Backlog's `modifiedFiles` field;
+- preserve the full `implementationPlan` text and reject missing, blank, or non-string plans with an actionable CLI diagnostic;
 - take verification commands only from Definition of Done entries beginning with `Verification:`;
 - remove the prefix and surrounding whitespace, preserving the command text otherwise;
 - reject a task with no allowed scope entries;
@@ -111,7 +115,7 @@ The adapter must:
 - deduplicate scope entries and commands while preserving their first occurrence order;
 - report malformed task data as a user-facing configuration error rather than throwing an unhandled exception.
 
-Treat `modifiedFiles` as the task scope whitelist. Entries may be exact repository-relative file paths, recursive directory scopes, or picomatch glob patterns, matching the `paths` behavior documented for pi-rules and Claude Code rules.
+Treat `modifiedFiles` as the agent-editable task scope whitelist. Controller-owned Backlog claim edits use the separate exact-fingerprint rule below, not a scope addition. Entries may be exact repository-relative file paths, recursive directory scopes, or picomatch glob patterns, matching the `paths` behavior documented for pi-rules and Claude Code rules.
 
 Scope entry semantics:
 
@@ -136,11 +140,11 @@ Required behavior:
 
 1. Require exactly one task ID and refuse to start if another run is active.
 2. Locate the Git repository root from the current working directory.
-3. Load and validate the Backlog task.
-4. Capture and validate the baseline described below.
-5. Persist the run state before prompting the agent.
+3. Load and validate the Backlog task, including its CLI-reported path, status, and assignees. Refuse another assignee's task or a status outside configured `readyStatus` and `inProgressStatus`.
+4. Capture and validate the baseline described below before changing Backlog.
+5. Persist a paused run, claim the task through `backlog task edit <id> --status <inProgressStatus> --assignee <claimAssignee>`, and read it back. Refuse unexpected definition, file, index, or HEAD changes. Freeze the exact post-claim task-file fingerprint and persist the claimed run before prompting the agent. An existing active claim by the same assignee needs no edit. Partial failures stay paused and require inspection and abort before retrying; never roll back automatically.
 6. Display a compact summary containing the task, allowed scope entries, verification commands, and repair limit.
-7. Send the agent an actual user message that includes the task description, acceptance criteria, allowed scope entries with their exact text, exact verification commands, and explicit instructions to implement only this task. Tell it not to commit, edit Backlog state, waive checks, or broaden scope.
+7. Send the agent an actual user message that includes the task description, full implementation plan, acceptance criteria, allowed scope entries with their exact text, exact verification commands, and explicit instructions to implement only this task. Include the captured implementation plan again in resume and repair prompts. Tell it not to commit, edit Backlog state, waive checks, or broaden scope.
 8. When the agent becomes settled, run deterministic verification automatically.
 9. If verification fails and repair attempts remain, send the exact failures back as a follow-up user message and allow a repair turn.
 10. When the agent settles after a repair, verify again.
@@ -251,8 +255,8 @@ Rules:
 3. Recompute the verification digest and refuse if the result is stale.
 4. Recheck `HEAD`, scope, and baseline invariants.
 5. Determine the paths actually changed by this run; do not stage every path merely matched by the allowed scope.
-6. Refuse if anything is staged outside the changed paths that match the effective scope.
-7. Stage only the changed paths that match the effective scope, including deletions, with argument-safe process invocation rather than interpolated shell text.
+6. Refuse if anything is staged outside the task-changed paths authorized by effective scope or the exact controller-owned claim fingerprint.
+7. Stage those changed paths, including deletions and the controller-owned task file, with argument-safe process invocation rather than interpolated shell text. Identify the claim file in confirmation and warn if it was already uncommitted at baseline.
 8. Recheck the staged path set before committing.
 9. Use the supplied message, or a deterministic default such as `<task-id>: <task title>`.
 10. Show the task ID, status, paths, and message and require interactive confirmation.
@@ -279,9 +283,9 @@ At `/implement` start:
 During the run:
 
 - `HEAD` must remain equal to the captured commit until `/commit` succeeds;
-- pre-existing outside-scope dirty paths must remain byte-for-byte and metadata-equivalent to their recorded baseline state;
-- any newly changed path must be within the effective allowed scope;
-- any outside-scope baseline path changed after the run starts is an out-of-scope change;
+- pre-existing outside-scope dirty paths must remain byte-for-byte and metadata-equivalent to their recorded baseline state, except the exact controller-owned Backlog claim file described below;
+- any newly changed path must be within the effective allowed scope or match the exact controller-owned claim fingerprint;
+- any other outside-scope baseline path changed after the run starts is an out-of-scope change;
 - ignored files are outside version 1's scope accounting unless they become Git-visible;
 - path handling must be NUL-safe and must correctly support spaces, tabs, Unicode, and leading dashes.
 
@@ -303,6 +307,12 @@ For each relevant path, distinguish at least:
 - Git index state where applicable.
 
 It is acceptable to use Git blob hashes or SHA-256 rather than retaining file contents. Do not copy the whole repository to create a baseline.
+
+## Controller-owned Backlog claim file
+
+The claim operation may change only the active task file reported by CLI JSON. It must be a Git-visible regular file without symlinks. Preserve the original baseline and HEAD; store the post-claim fingerprint separately. Include any claim change in changed paths, verification digests, and the confirmed commit. This may include a pre-existing uncommitted task definition in that one file, but never unrelated Backlog files.
+
+Do not grant the agent edit permission to this path, even when a task scope pattern matches it. Later content, mode, path, or type changes must fail verification. A matching expected fingerprint is the only metadata exception; adding scope or waiving command failures cannot bypass it. Persist the expected fingerprint and partial-claim state. Resume checks the saved claim without reassigning. Abort leaves the task and files unchanged.
 
 ## Scope enforcement
 
@@ -333,9 +343,10 @@ The hard invariant is:
 
 ```text
 every path changed since run baseline must match the effective allowed scope
+or be the controller-owned task file with its exact recorded claim fingerprint
 ```
 
-In addition, pre-existing outside-scope dirty paths must still match their baseline fingerprints. Here, "matches the effective allowed scope" means the canonical repository-relative path is covered by at least one exact file entry, directory scope, or glob pattern.
+In addition, pre-existing outside-scope dirty paths other than that exact claim file must still match their baseline fingerprints. Here, "matches the effective allowed scope" means the canonical repository-relative path is covered by at least one exact file entry, directory scope, or glob pattern.
 
 Return all offending paths in one result. Do not fail after the first path and force a repeated discovery loop.
 
@@ -527,6 +538,9 @@ interface PiControlConfig {
   verificationTimeoutMs: number;  // choose and document a sensible default
   shell: string;                   // default /bin/bash on Unix
   autoPlanHandoff: boolean;        // default true
+  claimAssignee: string;           // default "@pi-control"
+  readyStatus: string;             // default "To Do"
+  inProgressStatus: string;        // default "In Progress"
 }
 ```
 
@@ -653,7 +667,7 @@ At minimum cover:
 - rejected when failed or stale;
 - rejected for mismatched task;
 - rejected for staged outside-scope content;
-- stages only changed paths that match the effective scope, including deletion;
+- stages only changed implementation paths within effective scope and the exact controller-owned claim file, including implementation deletions;
 - safe handling of unusual filenames and commit messages;
 - hook/commit failure leaves recoverable state;
 - successful commit records SHA and does not push or close the task;

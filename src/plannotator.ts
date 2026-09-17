@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { requireAutoCommitDisabled } from './backlog.js';
 
 export const PLANNOTATOR_PLAN_APPROVED_CHANNEL = "plannotator:plan-approved";
 export const PLAN_HANDOFF_ENTRY_TYPE = "pi-control.plannotator-handoff";
@@ -27,7 +28,8 @@ type HandoffStatus =
 	| "queued"
 	| "disabled"
 	| "unavailable"
-	| "blocked-active-run";
+	| "blocked-active-run"
+	| "blocked-config";
 
 interface PlanHandoffEntry {
 	schemaVersion: 1;
@@ -111,6 +113,25 @@ async function handlePlanApproved(pi: ExtensionAPI, options: PlanHandoffOptions,
 			"pi-control: plan-to-backlog skill is unavailable. Load the skill, then rerun task generation from the preserved approved plan.",
 			"error",
 		);
+		return;
+	}
+
+	const sessionId = ctx.sessionManager.getSessionId();
+	const configError = await requireAutoCommitDisabled(safePath.value.cwdReal, pi.exec.bind(pi)).then(
+		() => undefined,
+		error => messageFromError(error),
+	);
+	const currentContext = options.getContext();
+	if (!currentContext || currentContext.sessionManager.getSessionId() !== sessionId || currentContext.cwd !== ctx.cwd) return;
+	if (configError !== undefined) {
+		pi.appendEntry(PLAN_HANDOFF_ENTRY_TYPE, createEntry('blocked-config', event.value, safePath.value, configError));
+		notify(currentContext, `pi-control: approved plan preserved; task generation was not started. ${configError}`, 'error');
+		return;
+	}
+	if (!options.isEnabled() || options.isRunActive() || !hasPlanToBacklogSkill(pi)) {
+		const reason = 'handoff conditions changed while checking Backlog configuration';
+		pi.appendEntry(PLAN_HANDOFF_ENTRY_TYPE, createEntry('unavailable', event.value, safePath.value, reason));
+		notify(currentContext, `pi-control: approved plan preserved; ${reason}. Task generation was not started.`, 'warning');
 		return;
 	}
 
@@ -278,6 +299,7 @@ function buildPlanToBacklogPrompt(event: PlannotatorPlanApprovedEvent, safePath:
 		`${slashSkillCommand()} Create Backlog.md tasks from the approved Plannotator plan.`,
 		"",
 		"Do not implement the plan. Do not start /implement. Do not edit code for the plan. Only create or update Backlog tasks according to the plan-to-backlog skill.",
+		"Every created or updated implementation task must have a non-empty implementationPlan stored in Backlog. Write it with backlog task edit <id> --plan, then read backlog task <id> --json and verify task.implementationPlan before reporting completion. Include task-local steps, relevant files and symbols, constraints, and test cases. A description or a link to the parent plan is not a substitute. Keep new tasks in their initial status; do not mark them In Progress to attach a plan.",
 		"",
 		`Event cwd: ${event.cwd}`,
 		`Approved plan path as submitted: ${event.planFilePath}`,

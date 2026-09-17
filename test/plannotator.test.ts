@@ -41,11 +41,19 @@ function createHarness(options: {
 	ctx?: unknown;
 	enabled?: boolean;
 	runActive?: boolean;
+	autoCommit?: string;
+	configError?: string;
 } = {}) {
 	const eventBus = new FakeEventBus();
 	const sent: Array<{ content: string; options: Record<string, unknown> | undefined }> = [];
 	const entries: Array<{ customType: string; data: unknown }> = [];
+	const calls: Array<{ command: string; args: string[]; cwd: string }> = [];
 	const pi = {
+		exec: async (command: string, args: string[], execOptions: { cwd: string }) => {
+			calls.push({ command, args, cwd: execOptions.cwd });
+			if (options.configError) throw new Error(options.configError);
+			return { stdout: options.autoCommit ?? 'false\n', stderr: '', code: 0, killed: false };
+		},
 		events: eventBus,
 		getCommands: () => options.commands ?? [{ name: "skill:plan-to-backlog", source: "skill" }],
 		sendUserMessage: (content: string, sendOptions?: Record<string, unknown>) => {
@@ -60,6 +68,7 @@ function createHarness(options: {
 		? options.ctx
 		: {
 				hasUI: true,
+				sessionManager: { getSessionId: () => 'fixture-session' },
 				ui: {
 					notify: (message: string, type?: string) => notifications.push({ message, type }),
 				},
@@ -69,10 +78,11 @@ function createHarness(options: {
 		isEnabled: () => options.enabled ?? true,
 		isRunActive: () => options.runActive ?? false,
 	});
-	return { eventBus, sent, entries, notifications, unsubscribe };
+	const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+	return { eventBus, sent, entries, notifications, unsubscribe, calls, flush };
 }
 
-test("dispatches approved plans through the plan-to-backlog skill expansion path", () => {
+test("dispatches approved plans through the plan-to-backlog skill expansion path", async () => {
 	const cwd = makeTempDir();
 	try {
 		writeFileSync(join(cwd, "plan.md"), "# Approved\n\n- [ ] Make task\n");
@@ -84,6 +94,8 @@ test("dispatches approved plans through the plan-to-backlog skill expansion path
 			planContent: "# Approved\n\n- [ ] Make task\n",
 			feedback: "Split tests from implementation.",
 		});
+		await harness.flush();
+		assert.deepEqual(harness.calls, [{ command: 'backlog', args: ['config', 'get', 'autoCommit'], cwd }]);
 
 		assert.equal(harness.sent.length, 1);
 		assert.equal(harness.sent[0]!.options?.deliverAs, "followUp");
@@ -91,6 +103,9 @@ test("dispatches approved plans through the plan-to-backlog skill expansion path
 		assert.match(harness.sent[0]!.content, /^\/skill:plan-to-backlog\b/);
 		assert.match(harness.sent[0]!.content, /Split tests from implementation\./);
 		assert.match(harness.sent[0]!.content, /# Approved/);
+		assert.match(harness.sent[0]!.content, /non-empty implementationPlan/);
+		assert.match(harness.sent[0]!.content, /backlog task edit <id> --plan/);
+		assert.match(harness.sent[0]!.content, /task\.implementationPlan/);
 		assert.doesNotMatch(harness.sent[0]!.content, /^\/implement\b/);
 		assert.equal(harness.entries.length, 2);
 		assert.equal(harness.entries[0]!.customType, "pi-control.plannotator-handoff");
@@ -100,6 +115,49 @@ test("dispatches approved plans through the plan-to-backlog skill expansion path
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
+});
+
+test('preserves approved plans when auto-commit is enabled or cannot be read', async () => {
+	const cwd = makeTempDir();
+	try {
+		for (const options of [{ autoCommit: 'true\n' }, { autoCommit: '' }, { configError: 'backlog missing' }]) {
+			const harness = createHarness(options);
+			harness.eventBus.emit(PLANNOTATOR_PLAN_APPROVED_CHANNEL, { cwd, planFilePath: 'plan.md', planContent: 'approved' });
+			await harness.flush();
+			assert.equal(harness.sent.length, 0);
+			assert.equal(harness.entries.length, 2);
+			assert.equal((harness.entries[1].data as { status: string }).status, 'blocked-config');
+			assert.match(harness.notifications.at(-1)!.message, /backlog config set autoCommit false/);
+			assert.ok(harness.calls.every(call => call.args.join(' ') === 'config get autoCommit'));
+		}
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('does not dispatch a handoff if a controlled run starts during the configuration check', async () => {
+	const cwd = makeTempDir();
+	try {
+		const options = { runActive: false };
+		const harness = createHarness(options);
+		harness.eventBus.emit(PLANNOTATOR_PLAN_APPROVED_CHANNEL, { cwd, planFilePath: 'plan.md', planContent: 'approved' });
+		options.runActive = true;
+		await harness.flush();
+		assert.equal(harness.sent.length, 0);
+		assert.equal(harness.entries.length, 2);
+		assert.equal((harness.entries[1].data as { status: string }).status, 'unavailable');
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('does not send an approved plan into a replacement session after the configuration check', async () => {
+	const cwd = makeTempDir();
+	try {
+		let sessionId = 'original';
+		const harness = createHarness({ ctx: { cwd, hasUI: false, sessionManager: { getSessionId: () => sessionId } } });
+		harness.eventBus.emit(PLANNOTATOR_PLAN_APPROVED_CHANNEL, { cwd, planFilePath: 'plan.md', planContent: 'approved' });
+		sessionId = 'replacement';
+		await harness.flush();
+		assert.equal(harness.sent.length, 0);
+		assert.equal(harness.entries.length, 1);
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
 test("rejects malformed plan-approved events before persistence or dispatch", () => {
@@ -209,7 +267,7 @@ test("persists a receipt when the handoff cannot run because no session context 
 	}
 });
 
-test("does not duplicate exact huge plan file content in the skill prompt", () => {
+test("does not duplicate exact huge plan file content in the skill prompt", async () => {
 	const cwd = makeTempDir();
 	try {
 		const huge = `# Approved\n\n${"x".repeat(70_000)}`;
@@ -221,6 +279,7 @@ test("does not duplicate exact huge plan file content in the skill prompt", () =
 			planFilePath: "plan.md",
 			planContent: huge,
 		});
+		await harness.flush();
 
 		assert.equal(harness.sent.length, 1);
 		assert.ok(harness.sent[0]!.content.length < 10_000);
@@ -230,7 +289,7 @@ test("does not duplicate exact huge plan file content in the skill prompt", () =
 	}
 });
 
-test("keeps mismatched approved payload content authoritative instead of truncating it", () => {
+test("keeps mismatched approved payload content authoritative instead of truncating it", async () => {
 	const cwd = makeTempDir();
 	try {
 		const huge = `# Approved payload\n\n${"y".repeat(70_000)}`;
@@ -242,6 +301,7 @@ test("keeps mismatched approved payload content authoritative instead of truncat
 			planFilePath: "plan.md",
 			planContent: huge,
 		});
+		await harness.flush();
 
 		assert.equal(harness.sent.length, 1);
 		assert.ok(harness.sent[0]!.content.includes(huge));
