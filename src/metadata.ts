@@ -4,17 +4,24 @@ const SUMMARY_BEGIN = '<!-- SECTION:FINAL_SUMMARY:BEGIN -->';
 const SUMMARY_END = '<!-- SECTION:FINAL_SUMMARY:END -->';
 const NOTES_BEGIN = '<!-- SECTION:NOTES:BEGIN -->';
 const NOTES_END = '<!-- SECTION:NOTES:END -->';
-const NOTES_MASK = '\n<pi-control:implementation-notes>\n';
 
 export function maskImplementationNotes(text: string): string {
-  const beginCount = text.split(NOTES_BEGIN).length - 1;
-  const endCount = text.split(NOTES_END).length - 1;
-  if (beginCount !== 1 || endCount !== 1) throw new Error('Backlog task file must have exactly one Implementation Notes marker pair.');
-  const begin = text.indexOf(NOTES_BEGIN);
-  const contentStart = begin + NOTES_BEGIN.length;
-  const end = text.indexOf(NOTES_END);
-  if (end < contentStart) throw new Error('Backlog task Implementation Notes markers are out of order.');
-  return `${text.slice(0, contentStart)}${NOTES_MASK}${text.slice(end)}`;
+  const normalized = text.replace(/\r\n/g, '\n');
+  const header = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(normalized);
+  if (!header) throw new Error('Backlog task file has no supported frontmatter.');
+  const lines = header[1].split('\n');
+  if (lines.filter(line => line.startsWith('updated_date:')).length > 1) throw new Error('Duplicate Backlog updated_date field.');
+  const fixedHeader = lines.filter(line => !line.startsWith('updated_date:')).join('\n');
+  let body = normalized.slice(header[0].length);
+  const beginCount = body.split(NOTES_BEGIN).length - 1;
+  const endCount = body.split(NOTES_END).length - 1;
+  if (beginCount !== endCount || beginCount > 1) throw new Error('Unsupported Backlog Implementation Notes markers.');
+  if (beginCount === 1) {
+    const section = /\n*## Implementation Notes\n\n<!-- SECTION:NOTES:BEGIN -->\n[\s\S]*?\n<!-- SECTION:NOTES:END -->(?=\n+(?:## |\s*$)|\s*$)/;
+    if (!section.test(body)) throw new Error('Unsupported Backlog Implementation Notes section.');
+    body = body.replace(section, '');
+  }
+  return `${fixedHeader}\n---\n${body.trimEnd()}`;
 }
 
 export function implementationNotesComparableDigest(text: string): string {

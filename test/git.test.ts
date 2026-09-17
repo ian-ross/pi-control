@@ -421,36 +421,42 @@ test('managed file exact match permits outside-scope claim edits and fingerprint
   }
 });
 
-test('managed Backlog task files may change only Implementation Notes', async () => {
+test('managed Backlog task files may change only Implementation Notes and updated_date', async () => {
   const repo = await makeTempRepo();
   try {
-    const before = [
-      '---',
-      'status: In Progress',
-      '---',
-      '## Description',
-      'Do it.',
+    const taskText = (status: string, updated: string, notes = '') => {
+      const lines = [
+        '---',
+        `status: ${status}`,
+        `updated_date: '${updated}'`,
+        '---',
+        '## Description',
+        'Do it.',
+      ];
+      if (notes) lines.push(...notes.split('\n'));
+      lines.push('', '## Definition of Done', '- [ ] #1 Verification: npm test', '');
+      return lines.join('\n');
+    };
+    const notesSection = [
       '',
       '## Implementation Notes',
       '',
       '<!-- SECTION:NOTES:BEGIN -->',
-      'old note',
+      'new note',
+      'more detail',
       '<!-- SECTION:NOTES:END -->',
-      '',
-      '## Definition of Done',
-      '- [ ] #1 Verification: npm test',
-      '',
     ].join('\n');
-    const afterNotes = before.replace('old note', 'new note\nmore detail');
+    const claimed = taskText('In Progress', '2026-09-17 20:26');
+    const afterNotes = taskText('In Progress', '2026-09-17 20:28', notesSection);
     await repo.write('src/a.txt', 'one');
-    await repo.write('Backlog/tasks/task-1.md', before.replace('In Progress', 'To Do'));
+    await repo.write('Backlog/tasks/task-1.md', taskText('To Do', '2026-09-17 20:25'));
     await repo.commitAll();
     const scope = await compileScope(repo.root, ['src/']);
     const baseline = await captureBaseline(repo.root, scope);
 
-    await repo.write('Backlog/tasks/task-1.md', before);
+    await repo.write('Backlog/tasks/task-1.md', claimed);
     const expected = await fingerprintPath(repo.root, 'Backlog/tasks/task-1.md');
-    const notes = { 'Backlog/tasks/task-1.md': { comparableDigest: implementationNotesComparableDigest(before) } };
+    const notes = { 'Backlog/tasks/task-1.md': { comparableDigest: implementationNotesComparableDigest(claimed) } };
     await repo.write('Backlog/tasks/task-1.md', afterNotes);
     const inspection = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected }, undefined, notes);
 

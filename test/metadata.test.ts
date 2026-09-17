@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { assertTaskMetadataEdit } from '../src/metadata.js';
+import { assertTaskMetadataEdit, implementationNotesComparableDigest } from '../src/metadata.js';
 
 const before = `---
 id: TASK-1
@@ -41,6 +41,14 @@ test('metadata comparison permits only intended CLI edits', () => {
     after + '\nUnreported content\n',
   ]) assert.throws(() => assertTaskMetadataEdit(before, changed, [1]), /outside the intended/);
   assert.throws(() => assertTaskMetadataEdit(before, after, []), /outside the intended/);
+});
+
+test('Implementation Notes comparison permits note creation and timestamp churn only', () => {
+  const base = before.replace('status: In Progress', "status: In Progress\nupdated_date: '2026-09-17 20:26'");
+  const withNotes = base.replace("updated_date: '2026-09-17 20:26'", "updated_date: '2026-09-17 20:28'").replace('\n## Implementation Plan', '\n## Implementation Notes\n\n<!-- SECTION:NOTES:BEGIN -->\nBaseline: 10s\nPost-change: 2s\n<!-- SECTION:NOTES:END -->\n\n## Implementation Plan');
+  assert.equal(implementationNotesComparableDigest(base), implementationNotesComparableDigest(withNotes));
+  assert.notEqual(implementationNotesComparableDigest(base), implementationNotesComparableDigest(withNotes.replace('Preserve this.', 'Changed plan.')));
+  assert.throws(() => implementationNotesComparableDigest(`${withNotes}\n<!-- SECTION:NOTES:BEGIN -->`), /Implementation Notes markers/);
 });
 
 test('malformed task text and ambiguous metadata markers fail closed', () => {

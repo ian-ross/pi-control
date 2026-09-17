@@ -259,14 +259,13 @@ test('a partial claim failure stays paused and cannot be bypassed by resume', as
   assert.equal(h.task.lifecycle!.status, 'In Progress');
 });
 
-test('claim metadata is frozen even under broad product scope and cannot be waived', async t => {
+test('claim metadata is verified even under broad product scope and cannot be waived', async t => {
   const h = await setup(t, 'false');
   h.task.allowedScope.push('backlog/');
   await h.command('implement', 'TASK-1');
   const path = h.task.lifecycle!.path;
   const blocked = await h.controller.gate({ toolName: 'write', input: { path } });
-  assert.equal(blocked?.block, true);
-  assert.match(blocked!.reason, /controller-managed/);
+  assert.equal(blocked, undefined);
   await writeFile(join(h.root, path), 'external metadata change');
   await h.command('verify');
   assert.equal(h.controller.run?.latest?.scopeOk, false);
