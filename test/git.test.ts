@@ -4,7 +4,8 @@ import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { compileScope } from '../src/paths.ts';
-import { captureBaseline, findRoot, fingerprintPath, git, inspectRun, validateBaseline, validateManagedFiles } from '../src/git.ts';
+import { captureBaseline, findRoot, fingerprintPath, git, inspectRun, validateBaseline, validateManagedFiles, validateManagedImplementationNotes } from '../src/git.ts';
+import { implementationNotesComparableDigest } from '../src/metadata.ts';
 import { makeTempRepo } from './helpers.ts';
 
 test('findRoot locates the repository root and git helper rejects mutations', async () => {
@@ -420,6 +421,53 @@ test('managed file exact match permits outside-scope claim edits and fingerprint
   }
 });
 
+test('managed Backlog task files may change only Implementation Notes', async () => {
+  const repo = await makeTempRepo();
+  try {
+    const before = [
+      '---',
+      'status: In Progress',
+      '---',
+      '## Description',
+      'Do it.',
+      '',
+      '## Implementation Notes',
+      '',
+      '<!-- SECTION:NOTES:BEGIN -->',
+      'old note',
+      '<!-- SECTION:NOTES:END -->',
+      '',
+      '## Definition of Done',
+      '- [ ] #1 Verification: npm test',
+      '',
+    ].join('\n');
+    const afterNotes = before.replace('old note', 'new note\nmore detail');
+    await repo.write('src/a.txt', 'one');
+    await repo.write('Backlog/tasks/task-1.md', before.replace('In Progress', 'To Do'));
+    await repo.commitAll();
+    const scope = await compileScope(repo.root, ['src/']);
+    const baseline = await captureBaseline(repo.root, scope);
+
+    await repo.write('Backlog/tasks/task-1.md', before);
+    const expected = await fingerprintPath(repo.root, 'Backlog/tasks/task-1.md');
+    const notes = { 'Backlog/tasks/task-1.md': { comparableDigest: implementationNotesComparableDigest(before) } };
+    await repo.write('Backlog/tasks/task-1.md', afterNotes);
+    const inspection = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected }, undefined, notes);
+
+    assert.equal(inspection.scopeOk, true);
+    assert.deepEqual(inspection.errors, []);
+    assert.deepEqual(inspection.changedPaths, ['Backlog/tasks/task-1.md']);
+    assert.deepEqual(inspection.fingerprints['Backlog/tasks/task-1.md'], expected);
+
+    await repo.write('Backlog/tasks/task-1.md', afterNotes.replace('Do it.', 'Do something else.'));
+    const rejected = await inspectRun(baseline, scope, { 'Backlog/tasks/task-1.md': expected }, undefined, notes);
+    assert.equal(rejected.scopeOk, false);
+    assert.match(rejected.errors.join('\n'), /managed-file-changed: Backlog\/tasks\/task-1\.md/);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
 test('managed files may start dirty or untracked at baseline and still move to the exact claim fingerprint', async () => {
   const repo = await makeTempRepo();
   try {
@@ -578,6 +626,9 @@ test('managed file maps reject malformed paths and non-file fingerprints', async
     assert.throws(() => validateManagedFiles({ '../src/a.txt': fingerprint }), /managed/i);
     assert.throws(() => validateManagedFiles({ './src/a.txt': fingerprint }), /managed/i);
     assert.throws(() => validateManagedFiles({ 'src/a.txt': { kind: 'absent' } }), /regular file/i);
+    assert.doesNotThrow(() => validateManagedImplementationNotes({ 'src/a.txt': { comparableDigest: 'a'.repeat(64) } }));
+    assert.throws(() => validateManagedImplementationNotes({ '../src/a.txt': { comparableDigest: 'a'.repeat(64) } }), /managed/i);
+    assert.throws(() => validateManagedImplementationNotes({ 'src/a.txt': { comparableDigest: 'nope' } }), /digest/i);
     await assert.rejects(() => inspectRun(baseline, scope, { 'src/a.txt': { kind: 'absent' } }), /regular file/i);
   } finally {
     await repo.cleanup();

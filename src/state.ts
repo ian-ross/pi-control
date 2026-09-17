@@ -5,7 +5,7 @@ import { buildAcceptanceRequest, validateAcceptanceAssessment, type AcceptanceRe
 import { validateArtifactPolicy, type ArtifactPolicy } from './artifacts.js';
 import { finalSummary, satisfiedCriterionIndexes, type FinalizationState } from './finalization.js';
 import { stableDigest } from './digest.js';
-import { validateBaseline, validateManagedFiles, type ManagedFiles, type Baseline } from './git.js';
+import { validateBaseline, validateManagedFiles, validateManagedImplementationNotes, type ManagedFiles, type ManagedImplementationNotes, type Baseline } from './git.js';
 import type { ScopeEntry } from './paths.js';
 import type { VerificationResult } from './verification.js';
 
@@ -17,6 +17,7 @@ export interface ImplementationRun {
   terminalStatus?: string;
   finalization?: FinalizationState;
   managedFiles?: ManagedFiles;
+  managedImplementationNotes?: ManagedImplementationNotes;
   claimPending?: boolean;
   originalScope: ScopeEntry[];
   additions: { entry: ScopeEntry; timestamp: string; source: 'user' }[];
@@ -157,6 +158,12 @@ export function restoreState(data: unknown): ImplementationRun | null {
     try { validateManagedFiles(r.managedFiles); } catch { throw invalid(); }
     const paths = Object.keys(r.managedFiles);
     if (paths.length !== 1 || !object(t.lifecycle) || paths[0] !== t.lifecycle.path) throw invalid();
+  }
+  if (r.managedImplementationNotes !== undefined) {
+    try { validateManagedImplementationNotes(r.managedImplementationNotes); } catch { throw invalid(); }
+    const paths = Object.keys(r.managedImplementationNotes);
+    const lifecyclePath = object(t.lifecycle) && typeof t.lifecycle.path === 'string' ? t.lifecycle.path : undefined;
+    if (!lifecyclePath || paths.some(path => path !== lifecyclePath || !object(r.managedFiles) || !Object.hasOwn(r.managedFiles, path))) throw invalid();
   }
   if (r.claimPending !== undefined && (typeof r.claimPending !== 'boolean' || r.managedFiles === undefined)) throw invalid();
   if (r.claimPending && (!['FAILED', 'ABORTED'].includes(String(r.phase)) || r.pendingAutomatic)) throw invalid();

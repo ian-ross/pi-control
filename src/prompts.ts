@@ -14,7 +14,7 @@ export function implementationPrompt(run: ImplementationRun): string {
     'Acceptance criteria:', ...run.task.acceptanceCriteria.map(c => `- ${c}`),
     'Allowed scope entries, exactly as approved:', ...effectiveScope(run).map(s => `- ${s.text}`),
     'Exact verification commands:', ...run.task.verificationCommands.map(c => `\n${c}`),
-    'Do not commit, edit Backlog state, waive checks, invoke workflow commands, or broaden scope. Implement only this task within the allowed scope. The extension runs verification after you settle. No special evidence format is needed.',
+    'Do not commit, waive checks, invoke workflow commands, or broaden scope. Implement only this task within the allowed scope. You may update only the Implementation Notes section of the active Backlog task. Do not change other Backlog state. The extension runs verification after you settle. No special evidence format is needed.',
   ].join('\n');
 }
 export function acceptanceReviewPrompt(request: AcceptanceRequest): string {
@@ -56,11 +56,11 @@ export function repairPrompt(run: ImplementationRun): string {
       `Command: ${c.command}`, `Exit: ${c.code}; timeout: ${c.timedOut}; cancelled: ${c.cancelled}`, `stdout:\n${c.stdout}`, `stderr:\n${c.stderr}`,
     ].join('\n')),
     'Change only files within the effective scope:', ...effectiveScope(run).map(s => s.text),
-    'Do not commit, modify Backlog or workflow state, waive checks, or broaden scope. The extension will rerun verification. If a failure needs a human decision, stop and explain it.',
+    'Do not commit, modify workflow state, waive checks, or broaden scope. You may update only the Implementation Notes section of the active Backlog task. Do not change other Backlog state. The extension will rerun verification. If a failure needs a human decision, stop and explain it.',
   ].join('\n');
 }
 function managedTask(run: ImplementationRun): string[] {
-  return Object.keys(run.managedFiles ?? {}).map(path => `Controller-managed Backlog task file: ${path}. Do not edit it, even if a scope pattern matches. The extension already claimed this task and will handle committing the claim.`);
+  return Object.keys(run.managedFiles ?? {}).map(path => `Controller-managed Backlog task file: ${path}. Only the Implementation Notes section may be edited. The extension already claimed this task and will handle other task metadata.`);
 }
 
 function taskPlan(run: ImplementationRun): string[] {

@@ -1,6 +1,6 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { lstat, readlink, realpath } from 'node:fs/promises';
+import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { matchesScope, type ScopeEntry } from './paths.ts';
 import { stableDigest } from './digest.ts';
 import { matchesUntrackedArtifact, type ArtifactPolicy } from './artifacts.ts';
+import { implementationNotesComparableDigest } from './metadata.ts';
 
 const execFile = promisify(execFileCb);
 
@@ -19,6 +20,7 @@ export type PathFingerprint =
   | { kind: 'other'; mode: number };
 
 export type ManagedFiles = Record<string, PathFingerprint>;
+export type ManagedImplementationNotes = Record<string, { comparableDigest: string }>;
 
 export interface IndexFingerprint {
   mode: string;
@@ -481,6 +483,16 @@ export function validateManagedFiles(value: unknown): asserts value is ManagedFi
   }
 }
 
+export function validateManagedImplementationNotes(value: unknown): asserts value is ManagedImplementationNotes {
+  if (!objectRecord(value)) throw new Error('Invalid managed Implementation Notes: expected object.');
+  for (const [key, item] of Object.entries(value)) {
+    if (!validateRepoPathKey(key)) throw new Error(`Invalid managed Implementation Notes path: ${key}`);
+    if (!objectRecord(item) || Object.keys(item).join('\0') !== 'comparableDigest' || typeof item.comparableDigest !== 'string' || !/^[a-f0-9]{64}$/.test(item.comparableDigest)) {
+      throw new Error(`Invalid managed Implementation Notes digest for ${key}.`);
+    }
+  }
+}
+
 export function validateBaseline(value: unknown): asserts value is Baseline {
   if (!objectRecord(value)) throw new Error('Invalid baseline: expected object.');
   if (Object.keys(value).sort().join('\0') !== 'dirty\0head\0index\0root\0tracked') {
@@ -555,9 +567,10 @@ export async function captureBaseline(root: string, scope: ScopeEntry[], artifac
   };
 }
 
-export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], managedFiles: ManagedFiles = {}, artifactPolicy?: ArtifactPolicy): Promise<Inspection> {
+export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], managedFiles: ManagedFiles = {}, artifactPolicy?: ArtifactPolicy, managedImplementationNotes: ManagedImplementationNotes = {}): Promise<Inspection> {
   validateBaseline(baseline);
   validateManagedFiles(managedFiles);
+  validateManagedImplementationNotes(managedImplementationNotes);
   const root = await realpath(baseline.root);
   const foundRoot = await findRoot(root);
   const errors: string[] = [];
@@ -609,8 +622,16 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], manage
 
     const hasManagedExpected = Object.prototype.hasOwnProperty.call(managedFiles, filePath);
     const managedAuth = hasManagedExpected && !pathEscapes ? await canonicalPathTargets(rootReal, filePath, current) : undefined;
-    const managedExact = hasManagedExpected && !pathEscapes && managedAuth?.escapes === false
-      && managedAuth.targets.every(target => target === filePath) && sameFingerprint(managedFiles[filePath], current);
+    const managedTargetOk = hasManagedExpected && !pathEscapes && managedAuth?.escapes === false && managedAuth.targets.every(target => target === filePath);
+    let managedNotesOnly = false;
+    if (managedTargetOk && Object.prototype.hasOwnProperty.call(managedImplementationNotes, filePath) && current.kind === 'file' && managedFiles[filePath].kind === 'file' && current.mode === managedFiles[filePath].mode && current.executable === managedFiles[filePath].executable) {
+      try {
+        managedNotesOnly = implementationNotesComparableDigest(await readFile(path.join(rootReal, filePath), 'utf8')) === managedImplementationNotes[filePath].comparableDigest;
+      } catch {
+        managedNotesOnly = false;
+      }
+    }
+    const managedExact = managedTargetOk && (sameFingerprint(managedFiles[filePath], current) || managedNotesOnly);
     if (managedExact) managedExactSet.add(filePath);
     if (hasManagedExpected && !managedExact) {
       errors.push(`managed-file-changed: ${filePath}`);
@@ -636,7 +657,7 @@ export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], manage
     if (changedSinceBaseline) {
       changedPaths.push(filePath);
       changedSet.add(filePath);
-      fingerprints[filePath] = current;
+      fingerprints[filePath] = managedNotesOnly ? managedFiles[filePath] : current;
     }
 
     if (wasDirtyAtBaseline && changedSinceBaseline && !managedChangeAllowed) {

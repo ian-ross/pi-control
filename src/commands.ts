@@ -13,6 +13,7 @@ import { implementationPrompt, repairPrompt, verificationReport, recovery, accep
 import { buildAcceptanceRequest, validateAcceptanceAssessment, acceptanceReport, acceptedReviewCurrent, taskDigest, type AcceptanceRequest } from './acceptance.js';
 import { ensureMetadataCommit, inspectFinalization, readTaskFile, validateFinalTask, finalSummary, finalizationFailure, runBacklogEdit, satisfiedCriterionIndexes } from './finalization.js';
 import { compileArtifactPolicy } from './artifacts.js';
+import { implementationNotesComparableDigest } from './metadata.js';
 
 export const STATE_ENTRY = 'pi-control:state';
 export type AcceptanceReviewer = (request: AcceptanceRequest, ctx: ExtensionContext) => Promise<unknown | null>;
@@ -190,6 +191,16 @@ export class ControlController {
     const task = ensureAcceptanceCriteriaState(await this.taskLoader(run.baseline.root, run.task.id, this.pi.exec.bind(this.pi)));
     if (stableDigest(task) !== stableDigest(run.task)) throw new Error('Backlog task definition changed. Restore it or /control-abort and start /implement again.');
   }
+  private async restoreNotesAllowance(run: ImplementationRun): Promise<boolean> {
+    const path = run.task.lifecycle?.path;
+    if (!run.restored || !path || run.managedImplementationNotes || !Object.hasOwn(run.managedFiles ?? {}, path)) return false;
+    try {
+      run.managedImplementationNotes = { [path]: { comparableDigest: implementationNotesComparableDigest(await readTaskFile(run)) } };
+      return true;
+    } catch {
+      return false;
+    }
+  }
   private digest(run: ImplementationRun, current: Inspection): string {
     return verificationDigest(run.baseline, run.task.id, effectiveScope(run), run.task.verificationCommands, current, run.artifactPolicy);
   }
@@ -200,7 +211,8 @@ export class ControlController {
       if (await findRoot(ctx.cwd) !== run.baseline.root || await realpath(run.baseline.root) !== run.baseline.root) throw new Error('Repository root changed. Return to the captured repository or /control-abort.');
       await requireAutoCommitDisabled(run.baseline.root, this.pi.exec.bind(this.pi));
       await this.taskUnchanged(run);
-      const current = await inspectRun(run.baseline, effectiveScope(run), run.managedFiles, run.artifactPolicy);
+      if (await this.restoreNotesAllowance(run)) this.persist();
+      const current = await inspectRun(run.baseline, effectiveScope(run), run.managedFiles, run.artifactPolicy, run.managedImplementationNotes);
       if ((run.phase === 'VERIFIED' || run.phase === 'WAIVED' || run.acceptanceReview || run.acceptanceRequest) && (!current.scopeOk || !run.latest || this.digest(run, current) !== run.latest.digest)) { staleRun(run); this.restoreReviewTools(); this.persist(); }
       return current;
     } catch (e) { staleRun(run); this.restoreReviewTools(); this.persist(); throw e; }
@@ -238,7 +250,12 @@ export class ControlController {
       if (fingerprint.kind !== 'file' || await canonicalPath(root, lifecycle.path) !== lifecycle.path) throw new Error('Backlog task path changed while claiming it.');
       run.task = claimed;
       run.managedFiles = { [lifecycle.path]: fingerprint };
-      const current = await inspectRun(baseline, scope, run.managedFiles, run.artifactPolicy);
+      try {
+        run.managedImplementationNotes = { [lifecycle.path]: { comparableDigest: implementationNotesComparableDigest(await readTaskFile(run)) } };
+      } catch {
+        delete run.managedImplementationNotes;
+      }
+      const current = await inspectRun(baseline, scope, run.managedFiles, run.artifactPolicy, run.managedImplementationNotes);
       if (!current.scopeOk || current.changedPaths.some(p => p !== lifecycle.path) || current.stagedPaths.length) {
         throw new Error(`Repository changed unexpectedly while claiming the task:\n${current.errors.join('\n')}\nChanged paths: ${current.changedPaths.map(quote).join(', ')}`);
       }
@@ -287,7 +304,7 @@ export class ControlController {
     beginVerification(run);
     this.persist();
     try {
-      const result = await this.verifier({ baseline: run.baseline, task: run.task, scope: effectiveScope(run), managedFiles: run.managedFiles, artifactPolicy: run.artifactPolicy, shell: this.config.shell, timeoutMs: this.config.verificationTimeoutMs, signal });
+      const result = await this.verifier({ baseline: run.baseline, task: run.task, scope: effectiveScope(run), managedFiles: run.managedFiles, managedImplementationNotes: run.managedImplementationNotes, artifactPolicy: run.artifactPolicy, shell: this.config.shell, timeoutMs: this.config.verificationTimeoutMs, signal });
       if (generation !== this.generation) return;
       await requireAutoCommitDisabled(run.baseline.root, this.pi.exec.bind(this.pi));
       if (generation !== this.generation) return;
@@ -322,7 +339,7 @@ export class ControlController {
   private async showScope(ctx: ExtensionContext): Promise<void> {
     const run = this.active();
     await this.refresh(ctx);
-    this.notify(ctx, `${run.task.id}\nBacklog scope:\n${run.originalScope.map(s => `${s.kind}: ${quote(s.text)}`).join('\n')}\nUser additions:\n${run.additions.map(a => `${a.entry.kind}: ${quote(a.entry.text)} ${a.timestamp}`).join('\n') || 'none'}\nFrozen disposable artifact patterns: ${(run.artifactPolicy?.untrackedArtifacts ?? []).map(e => quote(e.text)).join(', ') || 'none'}\nController-managed claim files, read-only to the agent:\n${Object.keys(run.managedFiles ?? {}).map(quote).join('\n') || 'none'}`);
+    this.notify(ctx, `${run.task.id}\nBacklog scope:\n${run.originalScope.map(s => `${s.kind}: ${quote(s.text)}`).join('\n')}\nUser additions:\n${run.additions.map(a => `${a.entry.kind}: ${quote(a.entry.text)} ${a.timestamp}`).join('\n') || 'none'}\nFrozen disposable artifact patterns: ${(run.artifactPolicy?.untrackedArtifacts ?? []).map(e => quote(e.text)).join(', ') || 'none'}\nController-managed claim files, Implementation Notes edits allowed:\n${Object.keys(run.managedFiles ?? {}).map(quote).join('\n') || 'none'}`);
   }
   private async expandScope(args: string, ctx: ExtensionContext): Promise<void> {
     const run = this.active();
@@ -539,7 +556,12 @@ export class ControlController {
       if (typeof input !== 'string') throw new Error('Missing file path.');
       const supplied = input.startsWith('@') ? input.slice(1) : input;
       const canonical = await canonicalPath(run.baseline.root, supplied);
-      if (Object.hasOwn(run.managedFiles ?? {}, canonical)) throw new Error('The Backlog task file is controller-managed and cannot be edited by the agent.');
+      if (Object.hasOwn(run.managedFiles ?? {}, canonical)) {
+        if (!Object.hasOwn(run.managedImplementationNotes ?? {}, canonical)) throw new Error('The Backlog task file is controller-managed and cannot be edited by the agent.');
+        event.input.path = resolve(run.baseline.root, canonical);
+        if (run.phase === 'VERIFIED' || run.phase === 'WAIVED') { staleRun(run); this.persist(); }
+        return;
+      }
       if (!matchesScope(canonical, effectiveScope(run))) throw new Error('Path is outside task scope.');
       // Built-in tools use the session cwd. Pin execution to the root we checked.
       event.input.path = resolve(run.baseline.root, canonical);

@@ -1,5 +1,5 @@
 import type { ArtifactPolicy } from "./artifacts.ts";
-import { inspectRun as inspectGitRun, type Baseline, type Inspection, type ManagedFiles } from "./git.ts";
+import { inspectRun as inspectGitRun, type Baseline, type Inspection, type ManagedFiles, type ManagedImplementationNotes } from "./git.ts";
 import { verificationDigest } from "./digest.ts";
 import type { ControlTask } from "./backlog.ts";
 import type { ScopeEntry } from "./paths.ts";
@@ -24,6 +24,7 @@ export interface VerificationInput {
   task: ControlTask;
   scope: ScopeEntry[];
   managedFiles?: ManagedFiles;
+  managedImplementationNotes?: ManagedImplementationNotes;
   artifactPolicy?: ArtifactPolicy;
   shell: string;
   timeoutMs: number;
@@ -36,7 +37,7 @@ export type RunnerDependency =
 
 export interface VerificationDeps {
   runner?: RunnerDependency;
-  inspectRun?: (baseline: Baseline, scope: ScopeEntry[], managedFiles?: ManagedFiles, artifactPolicy?: ArtifactPolicy) => Inspection | Promise<Inspection>;
+  inspectRun?: (baseline: Baseline, scope: ScopeEntry[], managedFiles?: ManagedFiles, artifactPolicy?: ArtifactPolicy, managedImplementationNotes?: ManagedImplementationNotes) => Inspection | Promise<Inspection>;
   now?: () => Date;
   verificationDigest?: (
     baseline: Baseline,
@@ -80,7 +81,7 @@ export async function runVerification(input: VerificationInput, deps: Verificati
   const repoRoot = repoRootFromBaseline(input.baseline);
   const commands = input.task.verificationCommands;
 
-  const before = await inspectRun(input.baseline, input.scope, input.managedFiles, input.artifactPolicy);
+  const before = await inspectRun(input.baseline, input.scope, input.managedFiles, input.artifactPolicy, input.managedImplementationNotes);
   const commandResults: CommandResult[] = [];
 
   let stopForCancellation = input.signal?.aborted === true;
@@ -102,7 +103,7 @@ export async function runVerification(input: VerificationInput, deps: Verificati
     if (result.cancelled) stopForCancellation = true;
   }
 
-  const after = await inspectRun(input.baseline, input.scope, input.managedFiles, input.artifactPolicy);
+  const after = await inspectRun(input.baseline, input.scope, input.managedFiles, input.artifactPolicy, input.managedImplementationNotes);
   const mutated = before.contentDigest !== after.contentDigest;
   const inspection = after;
   const errors = commandResults.map(commandError).filter((error): error is string => error !== null);

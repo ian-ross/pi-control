@@ -1,5 +1,25 @@
+import { createHash } from 'node:crypto';
+
 const SUMMARY_BEGIN = '<!-- SECTION:FINAL_SUMMARY:BEGIN -->';
 const SUMMARY_END = '<!-- SECTION:FINAL_SUMMARY:END -->';
+const NOTES_BEGIN = '<!-- SECTION:NOTES:BEGIN -->';
+const NOTES_END = '<!-- SECTION:NOTES:END -->';
+const NOTES_MASK = '\n<pi-control:implementation-notes>\n';
+
+export function maskImplementationNotes(text: string): string {
+  const beginCount = text.split(NOTES_BEGIN).length - 1;
+  const endCount = text.split(NOTES_END).length - 1;
+  if (beginCount !== 1 || endCount !== 1) throw new Error('Backlog task file must have exactly one Implementation Notes marker pair.');
+  const begin = text.indexOf(NOTES_BEGIN);
+  const contentStart = begin + NOTES_BEGIN.length;
+  const end = text.indexOf(NOTES_END);
+  if (end < contentStart) throw new Error('Backlog task Implementation Notes markers are out of order.');
+  return `${text.slice(0, contentStart)}${NOTES_MASK}${text.slice(end)}`;
+}
+
+export function implementationNotesComparableDigest(text: string): string {
+  return createHash('sha256').update(maskImplementationNotes(text)).digest('hex');
+}
 
 /** Compare task text without granting permission to change unrelated metadata. */
 export function assertTaskMetadataEdit(before: string, after: string, checkedIndexes: number[]): void {
