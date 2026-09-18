@@ -30,6 +30,7 @@ import { isActive } from './state.js';
 import { registerPlanHandoff } from './plannotator.js';
 
 const commands: Record<string, string> = {
+  plan: 'Select a numbered plan filename and enter Plannotator planning mode',
   implement: 'Claim and implement one Backlog task with scope enforcement and bounded repairs',
   'implement-resume': 'Resume a failed or restored task with a fresh repair budget',
   verify: 'Verify the active task without automatic repair',

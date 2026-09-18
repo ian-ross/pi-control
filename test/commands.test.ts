@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, rm, unlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test, type TestContext } from 'node:test';
@@ -93,6 +93,74 @@ async function setup(t: TestContext, check = 'true', trackTask = true, options: 
   const settled = async () => events.get('agent_settled')!({}, ctx);
   return { root, git, task, saveTask, ctx, pi, controller, command, settled, messages, notices, confirmations, entries, events, calls, registeredTools, getActiveTools: () => [...activeTools], setAutoCommit: (value: string) => { autoCommit = value; }, deny: () => { confirm = false; } };
 }
+
+function enablePlanMode(pi: ExtensionAPI) {
+  pi.getCommands = () => [{
+    name: 'plannotator-plan-mode', source: 'extension',
+    sourceInfo: { path: '/extensions/plannotator/index.ts', source: 'test', scope: 'user', origin: 'package' },
+  }];
+}
+
+test('/plan forwards only the selected filename with command dispatch enabled', async t => {
+  const h = await setup(t);
+  enablePlanMode(h.pi);
+  await mkdir(join(h.root, '.pi'));
+  await writeFile(join(h.root, '.pi/pi-control.json'), JSON.stringify({ plansDirectory: 'plans' }));
+  await mkdir(join(h.root, 'plans'));
+  await writeFile(join(h.root, 'plans/004-existing.md'), 'existing plan');
+  const sent: { text: unknown; options: unknown }[] = [];
+  h.pi.sendUserMessage = (text, options) => { sent.push({ text, options }); };
+  await h.command('plan', 'Add USER profile page!');
+  assert.deepEqual(sent, [{ text: '/plannotator-plan-mode plans/005-add-user-profile-page.md', options: { expandPromptTemplates: true } }]);
+  assert.deepEqual(await readdir(join(h.root, 'plans')), ['004-existing.md']);
+  assert.equal(h.controller.run, null);
+  assert.equal(h.calls.length, 0);
+
+  await writeFile(join(h.root, '.pi/pi-control.json'), JSON.stringify({ plansDirectory: 'design plans' }));
+  h.ctx.cwd = join(h.root, 'backlog');
+  await h.command('plan', 'Another page');
+  assert.deepEqual(sent.at(-1), { text: '/plannotator-plan-mode ../design plans/001-another-page.md', options: { expandPromptTemplates: true } });
+  assert.deepEqual(await readdir(join(h.root, 'design plans')), []);
+});
+
+test('/plan refuses missing input, unavailable Plannotator, and invalid or untrusted config', async t => {
+  const h = await setup(t);
+  for (const args of ['', '   ', '!!!']) {
+    await h.command('plan', args);
+    assert.match(h.notices.at(-1)!, /Usage: \/plan/);
+  }
+  await h.command('plan', 'new page');
+  assert.match(h.notices.at(-1)!, /Plannotator.*unavailable/);
+  enablePlanMode(h.pi);
+  await mkdir(join(h.root, '.pi'));
+  await writeFile(join(h.root, '.pi/pi-control.json'), JSON.stringify({ plansDirectory: '' }));
+  await h.command('plan', 'new page');
+  assert.match(h.notices.at(-1)!, /plansDirectory/);
+  await writeFile(join(h.root, '.pi/pi-control.json'), '{}');
+  h.ctx.isProjectTrusted = () => false;
+  await h.command('plan', 'new page');
+  assert.match(h.notices.at(-1)!, /Trust this project/);
+  assert.deepEqual(h.messages, []);
+  assert.ok(!(await readdir(h.root)).includes('plans'));
+});
+
+test('/plan refuses busy sessions and active controlled runs', async t => {
+  const h = await setup(t);
+  enablePlanMode(h.pi);
+  h.ctx.isIdle = () => false;
+  await h.command('plan', 'new page');
+  assert.match(h.notices.at(-1)!, /Wait for the agent/);
+  h.ctx.isIdle = () => true;
+  h.controller.busy = true;
+  await h.command('plan', 'new page');
+  assert.match(h.notices.at(-1)!, /already running/);
+  h.controller.busy = false;
+  await h.command('implement', 'TASK-1');
+  const count = h.messages.length;
+  await h.command('plan', 'new page');
+  assert.match(h.notices.at(-1)!, /controlled run is active/);
+  assert.equal(h.messages.length, count);
+});
 
 test('implementation refuses enabled or unreadable Backlog auto-commit before starting a run', async t => {
   const h = await setup(t);

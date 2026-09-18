@@ -11,6 +11,7 @@ test('conservative defaults and explicit valid overrides', () => {
     verificationTimeoutMs: 120000,
     shell: '/bin/bash',
     autoPlanHandoff: true,
+    plansDirectory: 'plans',
     claimAssignee: '@pi-control',
     readyStatus: 'To Do',
     inProgressStatus: 'In Progress',
@@ -26,6 +27,7 @@ test('claim settings canonicalize assignee and trim statuses', () => {
     verificationTimeoutMs: 120000,
     shell: '/bin/bash',
     autoPlanHandoff: true,
+    plansDirectory: 'plans',
     claimAssignee: '@Pi.User-1',
     readyStatus: 'Ready',
     inProgressStatus: 'doing',
@@ -46,6 +48,7 @@ test('invalid config is rejected rather than coerced', () => {
     { shell: '' },
     { shell: 'bash' },
     { autoPlanHandoff: 'false' },
+    ...[null, 12, [], '', '   ', '/tmp/plans', ' /tmp/plans ', '../plans', 'docs/../plans', '.git/plans', 'docs/.git', 'C:/plans', 'docs\\plans', 'plans\n', 'plans\0'].map(plansDirectory => ({ plansDirectory })),
     { claimAssignee: '' },
     { claimAssignee: '@' },
     { claimAssignee: '@pi control' },
@@ -80,6 +83,7 @@ test('loadConfig combines user-global config with trusted project overrides', as
     await mkdir(join(root, '.pi'), { recursive: true });
     await writeFile(join(home, '.pi/agent/pi-control.json'), JSON.stringify({
       maxRepairAttempts: 5,
+      plansDirectory: 'global-plans',
       verificationTimeoutMs: 111,
       claimAssignee: 'global-user',
       readyStatus: 'Ready',
@@ -88,12 +92,14 @@ test('loadConfig combines user-global config with trusted project overrides', as
     }));
     await writeFile(join(root, '.pi/pi-control.json'), JSON.stringify({
       verificationTimeoutMs: 222,
+      plansDirectory: ' docs/plans ',
       claimAssignee: 'project-user',
       untrackedArtifacts: ['**/.pytest_cache/**'],
     }));
 
     const config = await loadConfig(root, '.pi', true, { home });
     assert.equal(config.maxRepairAttempts, 5);
+    assert.equal(config.plansDirectory, 'docs/plans');
     assert.equal(config.verificationTimeoutMs, 222);
     assert.equal(config.claimAssignee, '@project-user');
     assert.equal(config.readyStatus, 'Ready');
@@ -103,6 +109,7 @@ test('loadConfig combines user-global config with trusted project overrides', as
     await writeFile(join(root, '.pi/pi-control.json'), JSON.stringify({ untrackedArtifacts: [] }));
     assert.deepEqual((await loadConfig(root, '.pi', true, { home })).untrackedArtifacts, []);
     await writeFile(join(root, '.pi/pi-control.json'), '{}');
+    assert.equal((await loadConfig(root, '.pi', true, { home })).plansDirectory, 'global-plans');
     assert.deepEqual((await loadConfig(root, '.pi', true, { home })).untrackedArtifacts, ['**/__pycache__/**']);
     const explicitAgentDir = join(home, 'custom-agent');
     await mkdir(explicitAgentDir);

@@ -14,6 +14,7 @@ import { buildAcceptanceRequest, validateAcceptanceAssessment, acceptanceReport,
 import { ensureMetadataCommit, inspectFinalization, readTaskFile, validateFinalTask, finalSummary, finalizationFailure, runBacklogEdit, satisfiedCriterionIndexes } from './finalization.js';
 import { compileArtifactPolicy } from './artifacts.js';
 import { implementationNotesComparableDigest } from './metadata.js';
+import { nextPlanPath, planSlug } from './plans.js';
 
 export const STATE_ENTRY = 'pi-control:state';
 export type AcceptanceReviewer = (request: AcceptanceRequest, ctx: ExtensionContext) => Promise<unknown | null>;
@@ -80,9 +81,11 @@ export class ControlController {
     this.busy = true;
     try {
       if (this.disabled) throw new Error('State recovery failed. Start a new session after inspecting repository changes.');
+      if (name === 'plan' && isActive(this.run)) throw new Error('A controlled run is active. Finish it or use /control-abort before planning.');
       if (name !== 'control-abort' && isActive(this.run)) await this.recoverImplementationCommit(this.run);
       if (this.run?.phase === 'FINALIZING' && !['commit', 'control-status', 'control-abort'].includes(name)) throw new Error('Implementation is already committed. Retry /commit to finalize Backlog, or /control-abort.');
       switch (name) {
+        case 'plan': await this.plan(args, ctx); break;
         case 'implement': await this.implement(args, ctx); break;
         case 'implement-resume': await this.resume(args, ctx); break;
         case 'verify': this.match(args, false); await this.verify(ctx, false); break;
@@ -95,6 +98,18 @@ export class ControlController {
       }
     } catch (e) { this.notify(ctx, message(e), 'error'); }
     finally { this.busy = false; }
+  }
+  private async plan(args: string, ctx: ExtensionContext): Promise<void> {
+    const slug = planSlug(args);
+    const available = () => this.pi.getCommands().some(command => command.source === 'extension' && command.name === 'plannotator-plan-mode');
+    if (!available()) throw new Error('Load the Plannotator extension to use /plan. /plannotator-plan-mode is unavailable.');
+    const generation = this.generation;
+    const root = await findRoot(ctx.cwd);
+    this.config = await loadConfig(root, this.configDirectory, ctx.isProjectTrusted());
+    const path = await nextPlanPath(root, ctx.cwd, this.config.plansDirectory, slug);
+    if (generation !== this.generation) throw new Error('Session changed while selecting the plan file. Run /plan again.');
+    if (!ctx.isIdle() || !available()) throw new Error('Session is no longer ready for planning. Run /plan again when idle.');
+    this.pi.sendUserMessage(`/plannotator-plan-mode ${path}`, { expandPromptTemplates: true });
   }
   private noArgs(args: string): void { if (args.trim()) throw new Error('This command takes no arguments.'); }
   private active(): ImplementationRun {

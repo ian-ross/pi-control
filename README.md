@@ -1,8 +1,28 @@
 # pi-control
 
-`pi-control` is a Pi extension for working on one Backlog.md task at a time. It records the task, the allowed file scope, the starting Git state, and the exact verification commands. Then it lets the agent implement, runs mechanical checks, and allows a bounded repair loop. A separate read-only acceptance review must pass before commit. Commit confirmation covers the assessment, final summary, and any human-waived command failures. After the implementation commit, the controller finalizes the Backlog task in a separate task-file-only commit.
+`pi-control` is a Pi extension for planning and implementing development work
+in a structured way with deterministic verification at each step along the
+way.
 
-It is not a sandbox. It is a workflow guard and verifier.
+In _planning mode_, `pi-control` uses a detailed grilling approach along with
+Plannotator for plan review and adjustment, in order to arrive at an agreed
+plan for a piece of work. It then breaks that plan down into Backlog issues
+for implementation. Importantly, the Backlog issues record the expected scope
+of modifications for the issue (as a list of files and file globs), plus a set
+of agent-judged acceptance criteria *and* a set of deterministic verification
+criteria.
+
+In the _implementation phase_, the agent implements a single Backlog issue.
+The `pi-control` extension records the task, the allowed file scope, the
+starting Git state, and the exact verification commands. When the agent claims
+that the task is complete, `pi-control` runs mechanical checks, and allows a
+bounded repair loop. A separate read-only LLM-as-judge acceptance review must
+pass before commit.
+
+A separate _commit confirmation_ covers the assessment, final summary, and any
+human-waived command failures. After the implementation commit, the controller
+finalizes the Backlog task in a separate task-file-only commit.
+
 
 ## Preparation
 
@@ -14,13 +34,15 @@ Install the following extensions:
 
 ```
 mkdir -p .pi
-pi install -l npm:@plannotator/pi-extension
+pi install -l git:github.com/ian-ross/plannotator@plannotator-pi
 pi install -l npm:pi-rules
 pi install -l git:github.com/earendil-works/pi-review
 pi install -l npm:pi-answer@0.1.4
 ```
 
-and install this extension.
+and install this extension. (Note that it's important to use my fork of
+Plannotator! The documentation of Plannotator claims some functionality that
+doesn't exist and I had to add.)
 
 ### Configure Plannotator
 
@@ -114,6 +136,7 @@ Defaults:
   "verificationTimeoutMs": 120000,
   "shell": "/bin/bash",
   "autoPlanHandoff": true,
+  "plansDirectory": "plans",
   "claimAssignee": "@pi-control",
   "readyStatus": "To Do",
   "inProgressStatus": "In Progress",
@@ -128,6 +151,7 @@ Validation:
 - `verificationTimeoutMs` must be a positive integer no greater than 2147483647.
 - `shell` must be an absolute path without NUL bytes.
 - `autoPlanHandoff` must be boolean.
+- `plansDirectory` is a non-empty repository-relative directory. Absolute paths, `..`, Git metadata paths, backslashes, and control characters are rejected. Symlinks must stay inside the repository.
 - `claimAssignee` names one Backlog assignee. An omitted leading `@` is added. Letters, digits, dots, underscores, and hyphens are accepted.
 - `readyStatus`, `inProgressStatus`, and `terminalStatus` must be distinct, non-empty status names without control characters. Use names from your Backlog project.
 - `untrackedArtifacts` is a list of safe repository-relative paths or glob patterns. It defaults to empty.
@@ -136,6 +160,20 @@ Validation:
 If `.pi/pi-control.json` exists, the project must be trusted before `pi-control` loads it. Without the project file, global settings and defaults apply.
 
 There is no setting to disable scope enforcement or to treat failed checks as verified.
+
+## Starting a plan
+
+```text
+/plan add user profile page
+```
+
+`/plan` reloads `pi-control.json`, creates `plansDirectory` if needed, and selects a filename such as `plans/005-add-user-profile-page.md`. The directory is relative to the Git repository root, even when Pi starts in a subdirectory.
+
+The sequence starts at `001` and uses the highest existing `number-name.md` plus one. It does not fill gaps or scan subdirectories. Numbers have at least three digits and grow past `999`. The slug uses lowercase ASCII letters and digits, removes accents, and replaces separators with hyphens. Empty descriptions or empty slugs show usage.
+
+The command forwards only the selected path to `/plannotator-plan-mode`. Then write your detailed planning prompt. It does not submit the description as a prompt or create an empty plan file. Numbers are not reserved until a plan exists on disk, so avoid concurrent planning sessions in the same directory. Finish or abort any controlled implementation run before using `/plan`.
+
+This requires a Plannotator version whose `/plannotator-plan-mode` handler accepts a file path. Some releases document that argument but ignore it in the handler. Those releases toggle mode without selecting the file and need a Plannotator update or fix. The wrapper preserves Plannotator's toggle behavior, so invoke it while plan mode is off.
 
 ## Plannotator handoff
 
@@ -228,10 +266,11 @@ For tasks generated before this requirement, use the approved parent plan to pop
 
 ## Commands
 
-There are nine slash commands.
+There are ten slash commands.
 
 | Command | Example | What it does |
 | --- | --- | --- |
+| `/plan <description>` | `/plan add user profile page` | Selects a numbered filename in `plansDirectory` and invokes Plannotator plan mode without starting a planning prompt. |
 | `/implement <task-id>` | `/implement BACK-123` | Validates the task and Git baseline, assigns the task to `claimAssignee`, and sets `inProgressStatus`. It reads the claim back before prompting the agent, then verifies automatically when the agent settles. |
 | `/implement-resume [task-id]` | `/implement-resume BACK-123` | Resumes a `FAILED` or restored run. It rechecks root, `HEAD`, baseline, task equality, and scope. It resets the automatic repair budget. |
 | `/verify [task-id]` | `/verify BACK-123` | Runs scope checks and every configured verification command, then requests read-only acceptance review on success. It requires the captured baseline and never starts a repair loop. |

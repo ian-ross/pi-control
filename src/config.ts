@@ -15,6 +15,7 @@ export interface PiControlConfig extends ClaimSettings {
   verificationTimeoutMs: number;
   shell: string;
   autoPlanHandoff: boolean;
+  plansDirectory: string;
   untrackedArtifacts: string[];
   terminalStatus: string;
 }
@@ -24,6 +25,7 @@ export const defaults: PiControlConfig = {
   verificationTimeoutMs: 120_000,
   shell: '/bin/bash',
   autoPlanHandoff: true,
+  plansDirectory: 'plans',
   claimAssignee: '@pi-control',
   readyStatus: 'To Do',
   inProgressStatus: 'In Progress',
@@ -102,6 +104,13 @@ function normalizeConfigLayer(value: unknown): ConfigLayer {
   if (Object.hasOwn(input, 'autoPlanHandoff')) {
     if (typeof input.autoPlanHandoff !== 'boolean') throw new Error('autoPlanHandoff must be boolean.');
     layer.autoPlanHandoff = input.autoPlanHandoff;
+  }
+  if (Object.hasOwn(input, 'plansDirectory')) {
+    const value = typeof input.plansDirectory === 'string' ? input.plansDirectory.trim() : input.plansDirectory;
+    if (typeof value !== 'string' || !value || CONTROL_CHARS.test(input.plansDirectory as string) || isAbsolute(value) || /^[A-Za-z]:/.test(value) || value.includes('\\') || value.split('/').some(part => part === '..' || part.toLowerCase() === '.git')) {
+      throw new Error('plansDirectory must be a non-empty repository-relative directory without traversal, Git metadata, backslashes, or control characters.');
+    }
+    layer.plansDirectory = value;
   }
   if (Object.hasOwn(input, 'untrackedArtifacts')) {
     layer.untrackedArtifacts = normalizeArtifactPatterns(input.untrackedArtifacts);
