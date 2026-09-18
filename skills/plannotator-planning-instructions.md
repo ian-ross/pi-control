@@ -16,7 +16,7 @@ Repository task-management instructions apply after approval. The approved-plan 
 
 Planning workflow:
 1. Inspect the repository enough to understand the requested change, existing patterns, affected files, and verification commands.
-2. Ask the user only for requirements or choices that cannot be resolved from repository inspection.
+2. Interview the user relentlessly about every aspect of the plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer. Ask questions one at a time. If a question can be answered by exploring the codebase, explore the codebase instead. Do not expand scope beyond request without asking. Respect requests to proceed incrementally: allow the user to defer decisions to a later iteration.
 3. Write a concise markdown plan with context, approach, files to modify, reuse of existing code, implementation steps, non-goals if useful, and verification.
 4. Submit the plan with plannotator_submit_plan. If the plan is denied, update the same plan file and resubmit it.
 

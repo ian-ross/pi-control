@@ -31,16 +31,17 @@ finalizes the Backlog task in a separate task-file-only commit.
 
 ## Installation
 
-You need Node.js 22+, [Pi](https://github.com/earendil-works/pi-mono), Git, and
-[Backlog.md](https://github.com/MrLesk/Backlog.md) installed, with `backlog` on
-`PATH`. Initialize Backlog in the Git repository where you want to work.
-The tested environment is Linux with `/bin/bash`, Pi 0.85.1, and Backlog CLI
-1.52.0. See [the tested setup](docs/development.md#tested-setup) for all versions.
+You need Node.js 22+, [Pi](https://github.com/earendil-works/pi-mono), Git,
+and [Backlog.md](https://github.com/MrLesk/Backlog.md) installed, with
+`backlog` on `PATH`. Initialize Backlog in the Git repository where you want
+to work. Ensure that auto-commit for Backlog issue changes is *disabled*. The
+tested environment is Linux with `/bin/bash`, Pi 0.85.1, and Backlog CLI
+1.52.0. See [the tested setup](docs/development.md#tested-setup) for all
+versions.
 
 From your project's root, install the extensions:
 
 ```bash
-mkdir -p .pi
 pi install -l git:github.com/ian-ross/plannotator@plannotator-pi
 pi install -l npm:pi-rules
 pi install -l git:github.com/earendil-works/pi-review
@@ -51,27 +52,10 @@ pi install -l git:github.com/ian-ross/pi-control
 Use my fork of Plannotator as shown above. Some other releases document a
 plan-file argument but ignore it, so `/plan` cannot select the intended file.
 
-These commands install packages for this project. Omit `-l` for a user-global
-installation. If you already have a checkout of `pi-control`, run `npm install`
-in that checkout, then use `pi install -l /absolute/path/to/pi-control` from
-your project instead of the last command. Install the package directory, not
-just `src/index.ts`, so Pi also loads the bundled `plan-to-backlog` skill.
+These commands install packages for the local project only. Omit `-l` for a
+user-global installation.
 
 ## Configuration
-
-### Disable Backlog auto-commit
-
-Before generating tasks or starting an implementation run:
-
-```bash
-backlog config set autoCommit false
-backlog config get autoCommit
-```
-
-The second command must print `false`. This is a Backlog project setting, not
-a `pi-control` setting. The controller manages its own commits and refuses to
-run if it cannot confirm that Backlog auto-commit is disabled. Finish any
-setup commits before starting `/implement`.
 
 ### Configure Plannotator
 
@@ -162,8 +146,9 @@ tasks assigned to someone else. Only one controlled run can be active.
 
 When the agent finishes, `pi-control` checks scope and runs the task's
 verification commands. Failed verification allows up to two automatic repair
-turns by default. Successful checks lead to a separate read-only acceptance
-review. Every criterion must be satisfied before commit.
+turns by default. Successful checks lead to a separate read-only LLM-as-judge
+acceptance review based on the acceptance criteria of the task. Every
+criterion must be satisfied before commit.
 
 Use `/control-status` to inspect progress and `/scope-show` to see the allowed
 files. If the task needs another file, add it with confirmation:
@@ -203,7 +188,7 @@ task changes, and acceptance review cannot be waived. See
 After verification and acceptance review succeed:
 
 ```text
-/commit BACK-123 BACK-123: add user profile page
+/commit BACK-123
 ```
 
 Review the acceptance evidence, final summary, and any waived failures in the
