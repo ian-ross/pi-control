@@ -58,8 +58,8 @@ export function registerControl(pi: ExtensionAPI, deps: ControlDependencies = {}
       return control.receiveAcceptanceTool(params, ctx);
     },
   } as Parameters<ExtensionAPI['registerTool']>[0]);
-  pi.on('session_start', (_event, ctx) => control.initialize(ctx));
-  pi.on('session_tree', (_event, ctx) => control.initialize(ctx));
+  pi.on('session_start', (_event, ctx) => control.initialize(ctx, 'session'));
+  pi.on('session_tree', (_event, ctx) => control.initialize(ctx, 'tree'));
   pi.on('agent_settled', (_event, ctx) => control.settled(ctx));
   pi.on('tool_call', event => control.gate(event));
   const unsubscribe = registerPlanHandoff(pi, {

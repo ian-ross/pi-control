@@ -33,6 +33,7 @@ export interface ImplementationRun {
   waiver?: { reason: string; timestamp: string; failedCommands: string[]; digest: string };
   acceptanceRequest?: AcceptanceRequest;
   acceptanceReview?: AcceptanceReview;
+  activeToolsBeforeAcceptance?: string[];
   implementationCommitSha?: string;
   metadataCommitSha?: string;
   commitSha?: string;
@@ -101,6 +102,7 @@ export function serializeState(run: ImplementationRun | null): PersistedRunState
 
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function strings(value: unknown): value is string[] { return Array.isArray(value) && value.every(v => typeof v === 'string'); }
+function toolNames(value: unknown): value is string[] { return strings(value) && value.every(v => v.length > 0 && !v.includes('\0')); }
 function nonempty(value: unknown): value is string { return typeof value === 'string' && value.length > 0; }
 function count(value: unknown): boolean { return Number.isSafeInteger(value) && (value as number) >= 0; }
 function digest(value: unknown): boolean { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
@@ -181,6 +183,7 @@ export function restoreState(data: unknown): ImplementationRun | null {
   if (r.waiver !== undefined && (!object(r.waiver) || !nonempty(r.waiver.reason) || !nonempty(r.waiver.timestamp) || !strings(r.waiver.failedCommands) || !r.waiver.failedCommands.length || !digest(r.waiver.digest))) throw invalid();
   if (r.acceptanceRequest !== undefined && !acceptanceRequest(r.acceptanceRequest)) throw invalid();
   if (r.acceptanceReview !== undefined && !acceptanceReview(r.acceptanceReview)) throw invalid();
+  if (r.activeToolsBeforeAcceptance !== undefined && !toolNames(r.activeToolsBeforeAcceptance)) throw invalid();
   if (object(r.acceptanceReview) && object(r.latest) && (r.acceptanceReview.taskId !== t.id || r.acceptanceReview.codeDigest !== r.latest.digest)) throw invalid();
   if (r.implementationCommitSha !== undefined && (typeof r.implementationCommitSha !== 'string' || !/^[a-f0-9]{40,64}$/.test(r.implementationCommitSha))) throw invalid();
   if (r.metadataCommitSha !== undefined && (typeof r.metadataCommitSha !== 'string' || !/^[a-f0-9]{40,64}$/.test(r.metadataCommitSha))) throw invalid();

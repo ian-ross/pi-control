@@ -602,6 +602,34 @@ test('acceptance review restores active tools when pending review becomes stale'
   assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
 });
 
+test('pending acceptance tool snapshot survives review branch navigation', async t => {
+  const h = await setup(t, 'true', true, { acceptanceReviewer: null, toolProtocol: true });
+  await h.command('implement', 'TASK-1');
+  await writeFile(join(h.root, 'allowed'), 'work');
+  await h.command('verify');
+  assert.ok(h.controller.run?.acceptanceRequest);
+  assert.deepEqual(h.getActiveTools().sort(), ['find', 'grep', 'ls', 'lsp_hover', 'pi_control_acceptance_review', 'read'].sort());
+
+  const originalEntries = [...h.entries];
+  h.entries.length = 0;
+  await h.events.get('session_tree')!({}, h.ctx);
+  assert.equal(h.controller.run, null);
+  assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
+
+  h.pi.setActiveTools(['read', 'grep', 'find', 'ls', 'lsp_hover', 'pi_control_acceptance_review']);
+  h.entries.push(...originalEntries);
+  await h.events.get('session_tree')!({}, h.ctx);
+  const returnedRun = h.controller.run as ImplementationRun | null;
+  assert.ok(returnedRun?.acceptanceRequest);
+  assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
+
+  await h.command('implement-resume');
+  const resumedRun = h.controller.run as ImplementationRun | null;
+  assert.equal(resumedRun?.phase, 'IMPLEMENTING');
+  assert.equal(resumedRun?.acceptanceRequest, undefined);
+  assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
+});
+
 test('scope addition and abort require confirmation, never register LLM tools', async t => {
   const h = await setup(t);
   await h.command('implement', 'TASK-1'); await h.settled();
@@ -819,7 +847,8 @@ test('verify and resume can restore saved task state in a new session', async t 
   await h.events.get('session_start')!({}, h.ctx);
   assert.equal(h.controller.run, null);
   await h.command('verify', 'TASK-1');
-  assert.equal(h.controller.run?.phase, 'VERIFIED', h.notices.join('\n'));
+  const verifiedRun = h.controller.run as ImplementationRun | null;
+  assert.equal(verifiedRun?.phase, 'VERIFIED', h.notices.join('\n'));
   assert.match(h.notices.join('\n'), /Restored TASK-1 IMPLEMENTING/);
 
   const r = await setup(t);
@@ -828,7 +857,8 @@ test('verify and resume can restore saved task state in a new session', async t 
   await r.events.get('session_start')!({}, r.ctx);
   assert.equal(r.controller.run, null);
   await r.command('implement-resume', 'TASK-1');
-  assert.equal(r.controller.run?.phase, 'IMPLEMENTING', r.notices.join('\n'));
+  const resumed = r.controller.run as ImplementationRun | null;
+  assert.equal(resumed?.phase, 'IMPLEMENTING', r.notices.join('\n'));
   assert.equal(r.messages.length, 2);
 });
 

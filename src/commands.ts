@@ -54,8 +54,8 @@ export class ControlController {
     else process.stderr.write(`pi-control: ${text}\n`);
   }
   persist(): void { this.pi.appendEntry(STATE_ENTRY, persistStateMarker(this.run)); }
-  async initialize(ctx: ExtensionContext): Promise<void> {
-    this.restoreReviewTools();
+  async initialize(ctx: ExtensionContext, reason: 'session' | 'tree' = 'session'): Promise<void> {
+    this.restoreReviewTools({ consume: reason !== 'tree' });
     this.generation++;
     this.abortController?.abort();
     this.context = ctx;
@@ -65,6 +65,7 @@ export class ControlController {
       const entries = ctx.sessionManager.getBranch().filter(e => e.type === 'custom' && e.customType === STATE_ENTRY);
       const latest = entries.at(-1);
       if (latest?.type === 'custom') this.run = restoreStateMarker(latest.data);
+      if (this.run?.activeToolsBeforeAcceptance) this.restoreReviewTools({ consume: false });
       if (isActive(this.run)) this.notify(ctx, `Restored ${this.run.task.id} ${this.run.phase}. Automatic work is paused. Use /control-status, /verify, or /implement-resume.`);
     } catch (e) {
       this.run = null;
@@ -134,7 +135,7 @@ export class ControlController {
     const root = await findRoot(ctx.cwd);
     const run = restoreLatestStateForTask(root, id);
     if (!run) return;
-    if (!isActive(run)) throw new Error(`Latest saved run for ${run.task.id} is ${run.phase}. Use /implement <task-id> to start a new run.`);
+    if (run.phase === 'COMMITTED' || run.phase === 'ABORTED') throw new Error(`Latest saved run for ${run.task.id} is ${run.phase}. Use /implement <task-id> to start a new run.`);
     this.run = run;
     this.persist();
     this.notify(ctx, `Restored ${run.task.id} ${run.phase}. Automatic work is paused.`);
@@ -163,10 +164,14 @@ export class ControlController {
     if (!ctx.hasUI) throw new Error('Interactive confirmation is required. Run this command in Pi TUI or an RPC client that supports confirmation.');
     if (!await ctx.ui.confirm(title, text)) throw new Error('Cancelled.');
   }
-  private restoreReviewTools(): void {
-    if (!this.savedActiveTools) return;
-    try { (this.pi as unknown as { setActiveTools?: (tools: string[]) => void }).setActiveTools?.(this.savedActiveTools); } catch { /* keep workflow state even if tool restoration fails */ }
-    this.savedActiveTools = undefined;
+  private restoreReviewTools(options: { consume?: boolean } = {}): void {
+    const tools = this.savedActiveTools ?? this.run?.activeToolsBeforeAcceptance;
+    if (!tools) return;
+    try { (this.pi as unknown as { setActiveTools?: (tools: string[]) => void }).setActiveTools?.(tools); } catch { /* keep workflow state even if tool restoration fails */ }
+    if (options.consume ?? true) {
+      this.savedActiveTools = undefined;
+      if (this.run) delete this.run.activeToolsBeforeAcceptance;
+    }
   }
   private async assertAcceptanceCurrent(run: ImplementationRun, request: AcceptanceRequest, ctx: ExtensionContext, generation: number, requirePending: boolean): Promise<void> {
     if (generation !== this.generation || this.run !== run || !isActive(this.run)) throw new Error('Session changed during acceptance review. Run /verify again.');
@@ -187,8 +192,10 @@ export class ControlController {
       const all = new Set(api.getAllTools?.().map(tool => tool.name) ?? []);
       if (active && api.setActiveTools) {
         this.savedActiveTools = active;
+        run.activeToolsBeforeAcceptance = active;
         const next = [...new Set([...active.filter(tool => ACCEPTANCE_READ_ONLY_TOOLS.has(tool)), 'pi_control_acceptance_review'].filter(tool => tool === 'pi_control_acceptance_review' || all.has(tool)))];
         api.setActiveTools(next);
+        this.persist();
       }
     } catch { /* prompting still works with the current tools */ }
     this.pi.sendUserMessage(acceptanceReviewPrompt(request), { deliverAs: 'followUp' });
