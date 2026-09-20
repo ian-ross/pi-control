@@ -77,11 +77,13 @@ test('scope additions invalidate a pass and preserve source', () => {
 
 test('restoration validates schema and never schedules work', () => {
   assert.throws(() => restoreState({ schemaVersion: 2, run: null }));
-  assert.throws(() => restoreState({ schemaVersion: 1, run: { phase: 'VERIFIED' } }));
-  assert.equal(restoreState({ schemaVersion: 1, run: null }), null);
+  assert.throws(() => restoreState({ schemaVersion: 1, run: null }));
+  assert.throws(() => restoreState({ schemaVersion: 2, kind: 'pi-control-run-state', run: { phase: 'VERIFIED' } }));
+  assert.equal(restoreState({ schemaVersion: 2, kind: 'pi-control-run-state', run: null }), null);
   // Full baseline validation is tested with real Git snapshots in integration tests.
   const run = makeRun();
-  assert.equal(serializeState(run).schemaVersion, 1);
+  assert.equal(serializeState(run).schemaVersion, 2);
+  assert.equal(serializeState(run).kind, 'pi-control-run-state');
   assert.equal(isActive(run), true);
   run.phase = 'COMMITTED';
   assert.equal(isActive(run), false);

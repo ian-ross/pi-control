@@ -100,6 +100,11 @@ in `plans/` by default, and each verification command has a 120-second timeout.
 The [configuration reference](docs/configuration.md) lists every setting,
 validation rule, and disposable-cache exclusion option.
 
+`pi-control` writes durable run state under `.pi/pi-control/state/`. Keep that
+state local and add it to `.gitignore`. The files contain controller state and
+baseline fingerprints. `pi-control` ignores that directory during scope checks
+and guarded commits, but it should not be committed.
+
 Use a coding agent to generate `pi-rules` rules for your codebase.
 
 Start interactive Pi in the project and approve project trust so it can load

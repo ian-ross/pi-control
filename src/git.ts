@@ -95,6 +95,10 @@ function uniqueSorted(values: Iterable<string>): string[] {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
 
+function isPiControlStatePath(filePath: string): boolean {
+  return filePath.startsWith('.pi/pi-control/state/');
+}
+
 async function execGit(root: string, args: string[], encoding: BufferEncoding | 'buffer' = 'utf8'): Promise<string | Buffer> {
   const options = {
     cwd: root,
@@ -167,8 +171,8 @@ async function statusEntries(root: string): Promise<StatusEntry[]> {
 function statusPaths(entries: StatusEntry[]): string[] {
   const paths: string[] = [];
   for (const entry of entries) {
-    paths.push(entry.path);
-    if (entry.originalPath) paths.push(entry.originalPath);
+    if (!isPiControlStatePath(entry.path)) paths.push(entry.path);
+    if (entry.originalPath && !isPiControlStatePath(entry.originalPath)) paths.push(entry.originalPath);
   }
   return uniqueSorted(paths);
 }

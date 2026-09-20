@@ -8,7 +8,8 @@ import { findRoot, captureBaseline, inspectRun, fingerprintPath, git, type Inspe
 import { compileScope, canonicalPath, matchesScope } from './paths.js';
 import { stableDigest, verificationDigest } from './digest.js';
 import { runVerification } from './verification.js';
-import { createRun, effectiveScope, isActive, beginVerification, finishVerification, resumeRun, staleRun, addScope, waiveRun, restoreState, serializeState, type ImplementationRun } from './state.js';
+import { createRun, effectiveScope, isActive, beginVerification, finishVerification, resumeRun, staleRun, addScope, waiveRun, type ImplementationRun } from './state.js';
+import { persistStateMarker, restoreStateMarker } from './state-storage.js';
 import { implementationPrompt, repairPrompt, verificationReport, recovery, acceptanceReviewPrompt, formatAcceptanceForConfirmation } from './prompts.js';
 import { buildAcceptanceRequest, validateAcceptanceAssessment, acceptanceReport, acceptedReviewCurrent, taskDigest, type AcceptanceRequest } from './acceptance.js';
 import { ensureMetadataCommit, inspectFinalization, readTaskFile, validateFinalTask, finalSummary, finalizationFailure, runBacklogEdit, satisfiedCriterionIndexes } from './finalization.js';
@@ -48,7 +49,7 @@ export class ControlController {
     if (ctx.hasUI) ctx.ui.notify(text, severity);
     else process.stderr.write(`pi-control: ${text}\n`);
   }
-  persist(): void { this.pi.appendEntry(STATE_ENTRY, serializeState(this.run)); }
+  persist(): void { this.pi.appendEntry(STATE_ENTRY, persistStateMarker(this.run)); }
   async initialize(ctx: ExtensionContext): Promise<void> {
     this.restoreReviewTools();
     this.generation++;
@@ -59,7 +60,7 @@ export class ControlController {
     try {
       const entries = ctx.sessionManager.getBranch().filter(e => e.type === 'custom' && e.customType === STATE_ENTRY);
       const latest = entries.at(-1);
-      if (latest?.type === 'custom') this.run = restoreState(latest.data);
+      if (latest?.type === 'custom') this.run = restoreStateMarker(latest.data);
       if (isActive(this.run)) this.notify(ctx, `Restored ${this.run.task.id} ${this.run.phase}. Automatic work is paused. Use /control-status, /verify, or /implement-resume.`);
     } catch (e) {
       this.run = null;

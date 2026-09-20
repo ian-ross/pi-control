@@ -26,8 +26,12 @@ try {
     if (result.error) throw result.error;
     if (result.status !== 0) process.exit(result.status || 1);
   }
-  const git = args => cp.execFileSync('git', args, { cwd: manifest.root, maxBuffer: 50 * 1024 * 1024 });
-  if (git(['rev-parse', 'HEAD']).toString('utf8').trim() !== manifest.head || hash(git(['ls-files', '--stage', '-z'])) !== manifest.index || hash(git(['status', '--porcelain=v1', '-z', '--untracked-files=all'])) !== manifest.status) {
+  const gitEnv = { ...process.env };
+  delete gitEnv.GIT_LITERAL_PATHSPECS;
+  delete gitEnv.GIT_NOGLOB_PATHSPECS;
+  const git = args => cp.execFileSync('git', args, { cwd: manifest.root, maxBuffer: 50 * 1024 * 1024, env: gitEnv });
+  const stateExclude = ':!.pi/pi-control/state/**';
+  if (git(['rev-parse', 'HEAD']).toString('utf8').trim() !== manifest.head || hash(git(['ls-files', '--stage', '-z', '--', stateExclude])) !== manifest.index || hash(git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', stateExclude])) !== manifest.status) {
     throw new Error('hook changed index or Git-visible paths');
   }
   for (const [name, expected] of manifest.files) {
@@ -70,8 +74,9 @@ export async function prepareCommitGuard(root: string, paths: string[]): Promise
   try {
     const hooks = resolve(root, (await git(root, ['rev-parse', '--git-path', 'hooks'])).replace(/\n$/, ''));
     const head = (await git(root, ['rev-parse', 'HEAD'])).trim();
-    const index = hash(await git(root, ['ls-files', '--stage', '-z']));
-    const status = hash(await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']));
+    const stateExclude = ':!.pi/pi-control/state/**';
+    const index = hash(await git(root, ['ls-files', '--stage', '-z', '--', stateExclude]));
+    const status = hash(await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', stateExclude]));
     const files = await Promise.all([...new Set(paths)].sort().map(async p => [p, await fingerprint(root, p)]));
     await writeFile(join(directory, 'manifest.json'), JSON.stringify({ root, hooks, head, index, status, files }), { mode: 0o600 });
     for (const hook of ['pre-commit', 'prepare-commit-msg', 'commit-msg']) await writeFile(join(directory, hook), hookSource, { mode: 0o700 });

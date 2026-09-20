@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { test, type TestContext } from 'node:test';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { registerControl } from '../src/index.js';
+import { persistStateMarker } from '../src/state-storage.js';
 import type { AcceptanceReviewer } from '../src/commands.js';
+import type { ImplementationRun } from '../src/state.js';
 import type { ControlTask } from '../src/backlog.js';
 const exec = promisify(execFile);
 
@@ -92,6 +94,10 @@ async function setup(t: TestContext, check = 'true', trackTask = true, options: 
   const command = async (name: string, args = '') => commands.get(name)!(args, ctx);
   const settled = async () => events.get('agent_settled')!({}, ctx);
   return { root, git, task, saveTask, ctx, pi, controller, command, settled, messages, notices, confirmations, entries, events, calls, registeredTools, getActiveTools: () => [...activeTools], setAutoCommit: (value: string) => { autoCommit = value; }, deny: () => { confirm = false; } };
+}
+
+function appendRunState(pi: ExtensionAPI, run: ImplementationRun | null) {
+  pi.appendEntry('pi-control:state', persistStateMarker(run));
 }
 
 function enablePlanMode(pi: ExtensionAPI) {
@@ -271,14 +277,14 @@ test('claim identity and status names can be configured without taking over anot
 test('restoration refuses forged metadata exemptions and malformed claim state', async t => {
   const h = await setup(t);
   await h.command('implement', 'TASK-1');
-  const saved = structuredClone(h.entries.at(-1)!.data) as { run: { managedFiles: Record<string, unknown>; claimPending: unknown } };
+  const saved = structuredClone(h.controller.run!) as ImplementationRun;
   for (const change of [
-    (data: typeof saved) => { data.run.managedFiles.outside = data.run.managedFiles[h.task.lifecycle!.path]; },
-    (data: typeof saved) => { data.run.managedFiles[h.task.lifecycle!.path] = { kind: 'directory' }; },
-    (data: typeof saved) => { data.run.claimPending = true; },
+    (run: ImplementationRun) => { run.managedFiles!.outside = run.managedFiles![h.task.lifecycle!.path]; },
+    (run: ImplementationRun) => { run.managedFiles![h.task.lifecycle!.path] = { kind: 'directory' }; },
+    (run: ImplementationRun) => { run.claimPending = true; },
   ]) {
-    const data = structuredClone(saved); change(data);
-    h.pi.appendEntry('pi-control:state', data);
+    const run = structuredClone(saved); change(run);
+    appendRunState(h.pi, run);
     await h.events.get('session_start')!({}, h.ctx);
     assert.equal(h.controller.run, null);
     assert.match(h.notices.at(-1)!, /recovery failed/);
@@ -474,20 +480,21 @@ test('a changed task plan invalidates verification and blocks commits', async t 
   assert.ok(!h.calls.some(c => c[0] === 'git'));
 });
 
-test('restoration rejects malformed task plans but keeps legacy runs paused under enforcement', async t => {
+test('restoration rejects malformed task plans but keeps planless runs paused under enforcement', async t => {
   const h = await setup(t);
   await h.command('implement', 'TASK-1');
-  const saved = structuredClone(h.entries.at(-1)!.data) as { run: { task: Record<string, unknown> } };
+  const saved = structuredClone(h.controller.run!) as ImplementationRun;
   for (const plan of [42, null, '', ' \n ']) {
-    const data = structuredClone(saved);
-    data.run.task.implementationPlan = plan;
-    h.pi.appendEntry('pi-control:state', data);
+    const run = structuredClone(saved);
+    run.task.implementationPlan = plan as string;
+    appendRunState(h.pi, run);
     await h.events.get('session_start')!({}, h.ctx);
     assert.equal(h.controller.run, null);
     assert.match(h.notices.at(-1)!, /recovery failed/);
   }
-  delete saved.run.task.implementationPlan;
-  h.pi.appendEntry('pi-control:state', saved);
+  const planless = structuredClone(saved);
+  delete planless.task.implementationPlan;
+  appendRunState(h.pi, planless);
   await h.events.get('session_start')!({}, h.ctx);
   assert.equal(h.controller.run?.phase, 'IMPLEMENTING');
   assert.equal(h.controller.run?.pendingAutomatic, false);
@@ -770,7 +777,7 @@ test('restores every workflow phase without scheduling agent work', async t => {
     if (phase === 'REPAIRING') run.repairs = 1;
     if (phase === 'WAIVED') run.waiver = { reason: 'accepted', timestamp: new Date().toISOString(), digest: run.latest!.digest, failedCommands: ['false'] };
     if (phase === 'COMMITTED') run.commitSha = 'c'.repeat(40);
-    h.pi.appendEntry('pi-control:state', { schemaVersion: 1, run });
+    appendRunState(h.pi, run);
     const count = h.messages.length;
     await h.events.get('session_start')!({}, h.ctx);
     assert.equal(h.controller.run?.phase, phase, h.notices.join('\n'));

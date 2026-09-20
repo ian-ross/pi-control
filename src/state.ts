@@ -35,7 +35,7 @@ export interface ImplementationRun {
   metadataCommitSha?: string;
   commitSha?: string;
 }
-export interface PersistedControlStateV1 { schemaVersion: 1; run: ImplementationRun | null }
+export interface PersistedRunStateV2 { schemaVersion: 2; kind: 'pi-control-run-state'; run: ImplementationRun | null }
 export const effectiveScope = (run: ImplementationRun): ScopeEntry[] => [...run.originalScope, ...run.additions.map(a => a.entry)];
 export const isActive = (run: ImplementationRun | null): run is ImplementationRun => !!run && !['COMMITTED', 'ABORTED'].includes(run.phase);
 export function createRun(task: ControlTask, baseline: Baseline, scope: ScopeEntry[], maxRepairAttempts: number): ImplementationRun {
@@ -93,8 +93,8 @@ export function waiveRun(run: ImplementationRun, reason: string, digest: string)
   run.phase = 'WAIVED';
   run.pendingAutomatic = false;
 }
-export function serializeState(run: ImplementationRun | null): PersistedControlStateV1 {
-  return JSON.parse(JSON.stringify({ schemaVersion: 1, run })) as PersistedControlStateV1;
+export function serializeState(run: ImplementationRun | null): PersistedRunStateV2 {
+  return JSON.parse(JSON.stringify({ schemaVersion: 2, kind: 'pi-control-run-state', run })) as PersistedRunStateV2;
 }
 
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
@@ -138,7 +138,7 @@ function verification(value: unknown): boolean {
 /** Filesystem and baseline validation follows structural validation before any command can act. */
 export function restoreState(data: unknown): ImplementationRun | null {
   const invalid = () => new Error('Invalid or unsupported pi-control state. Active enforcement is disabled. Start a new session and /implement after inspecting repository changes.');
-  if (!object(data) || data.schemaVersion !== 1 || !('run' in data)) throw invalid();
+  if (!object(data) || data.schemaVersion !== 2 || data.kind !== 'pi-control-run-state' || !('run' in data)) throw invalid();
   if (data.run === null) return null;
   const r = data.run;
   if (!object(r) || !object(r.task) || !object(r.baseline)) throw invalid();

@@ -56,6 +56,16 @@ If `.pi/pi-control.json` exists, the project must be trusted before `pi-control`
 
 There is no setting to disable scope enforcement or to treat failed checks as verified.
 
+## Local state files
+
+`pi-control` stores full controller state under `.pi/pi-control/state/` and keeps
+only a small pointer in the Pi session. Add `.pi/pi-control/state/` to
+`.gitignore`. The files include baseline fingerprints and other recovery data,
+so they are local working state, not project configuration.
+
+The extension ignores `.pi/pi-control/state/` when checking task scope and when
+running guarded commits. Do not use that directory for project files.
+
 ## Disposable cache files
 
 For caches that every contributor should ignore, prefer `.gitignore`. For user-specific exclusions, set `untrackedArtifacts` in global config, or override it in a trusted project:
