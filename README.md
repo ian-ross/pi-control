@@ -176,13 +176,22 @@ failures, then resume:
 /implement-resume BACK-123
 ```
 
-Resume rechecks the saved baseline and resets the repair budget. To rerun checks
-without starting an automatic repair loop, use `/verify BACK-123`. Use it again
-if changes make a result `STALE`.
+Resume rechecks the saved baseline and resets the repair budget. If the saved
+run state is gone but the implementation began from the current `HEAD`, provide
+that clean commit explicitly:
+
+```text
+/implement-resume BACK-123 --baseline abc1234
+```
+
+The explicit baseline must be the current `HEAD`; `pi-control` still refuses to
+resume across a changed Git history. To rerun checks without starting an automatic
+repair loop, use `/verify BACK-123`. Use it again if changes make a result `STALE`.
 
 Restored sessions stay paused. Check `/control-status`, then explicitly verify
-or resume. `/control-abort` ends a run after confirmation, but does not revert
-files or release the task claim.
+or resume. In a new Pi session, `/verify BACK-123` and `/implement-resume BACK-123`
+can restore the latest local run state from `.pi/pi-control/state/`. `/control-abort`
+ends a run after confirmation, but does not revert files or release the task claim.
 
 A human can waive eligible command failures with
 `/verify-waive BACK-123 upstream service unavailable`. A waiver records the
@@ -224,7 +233,7 @@ behavior and suggested external permission rules.
 | --- | --- |
 | `/plan <description>` | Selects a numbered plan path and enters Plannotator plan mode. Send the planning prompt afterward. |
 | `/implement <task-id>` | Validates and claims the task, then starts implementation and automatic verification. |
-| `/implement-resume [task-id]` | Resumes a failed or restored run after rechecking its baseline. Resets the repair budget. |
+| `/implement-resume [task-id] [--baseline <commit>]` | Resumes a failed or restored run after rechecking its baseline. With a task ID and current `HEAD` commit, reconstructs missing run state from that clean baseline. |
 | `/verify [task-id]` | Runs scope and command checks, then requests acceptance review on success. Does not start a repair loop. |
 | `/verify-waive <task-id> <reason>` | Records a confirmed human waiver for eligible failed commands. |
 | `/scope-show` | Shows task scope, run-local additions, and the frozen artifact policy. |

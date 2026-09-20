@@ -27,6 +27,8 @@ export interface ImplementationRun {
   pendingAutomatic: boolean;
   restored: boolean;
   createdAt: string;
+  updatedAt?: string;
+  stateRevision?: number;
   latest?: VerificationResult;
   waiver?: { reason: string; timestamp: string; failedCommands: string[]; digest: string };
   acceptanceRequest?: AcceptanceRequest;
@@ -170,6 +172,8 @@ export function restoreState(data: unknown): ImplementationRun | null {
   try { validateBaseline(r.baseline); } catch { throw invalid(); }
   if (!Array.isArray(r.originalScope) || !r.originalScope.length || !r.originalScope.every(scope) || !Array.isArray(r.additions) || !r.additions.every(a => object(a) && scope(a.entry) && a.source === 'user' && nonempty(a.timestamp))) throw invalid();
   if (!['IMPLEMENTING', 'VERIFYING', 'REPAIRING', 'FAILED', 'VERIFIED', 'WAIVED', 'STALE', 'FINALIZING', 'COMMITTED', 'ABORTED'].includes(String(r.phase)) || !count(r.repairs) || !count(r.maxRepairAttempts) || (r.repairs as number) > (r.maxRepairAttempts as number) || typeof r.pendingAutomatic !== 'boolean' || typeof r.restored !== 'boolean' || !nonempty(r.createdAt)) throw invalid();
+  if (r.updatedAt !== undefined && !nonempty(r.updatedAt)) throw invalid();
+  if (r.stateRevision !== undefined && !count(r.stateRevision)) throw invalid();
   if (r.pendingAutomatic && !['IMPLEMENTING', 'REPAIRING'].includes(String(r.phase))) throw invalid();
   const allowedScope = t.allowedScope;
   if (r.originalScope.some(entry => !allowedScope.includes(entry.text))) throw invalid();

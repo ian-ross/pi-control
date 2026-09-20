@@ -58,6 +58,13 @@ interface IndexEntry extends IndexFingerprint {
   tag: string;
 }
 
+interface TreeEntry {
+  mode: string;
+  type: string;
+  object: string;
+  path: string;
+}
+
 class UnsafeRepoPathError extends Error {
   constructor(public readonly rel: string, message: string) {
     super(message);
@@ -211,6 +218,22 @@ function parseIndexEntries(raw: string): IndexEntry[] {
   });
 }
 
+function parseTreeEntries(raw: string): TreeEntry[] {
+  const records = raw.split('\0').filter(Boolean);
+  return records.map((record) => {
+    const tab = record.indexOf('\t');
+    if (tab === -1) throw new Error(`invalid ls-tree record: ${record}`);
+    const meta = record.slice(0, tab).split(' ');
+    if (meta.length !== 3) throw new Error(`invalid ls-tree metadata: ${record}`);
+    return {
+      mode: meta[0],
+      type: meta[1],
+      object: meta[2],
+      path: normalizeGitPath(record.slice(tab + 1)),
+    };
+  });
+}
+
 async function indexEntries(root: string): Promise<IndexEntry[]> {
   const raw = (await execGit(root, ['ls-files', '-v', '-s', '-z'], 'utf8')) as string;
   return parseIndexEntries(raw);
@@ -298,6 +321,10 @@ async function safeRepoPath(rootReal: string, rel: string): Promise<string> {
     throw new UnsafeRepoPathError(rel, `path parent resolves outside repository: ${rel}`);
   }
   return finalPath;
+}
+
+function hashBuffer(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex');
 }
 
 async function hashFile(absolute: string): Promise<string> {
@@ -569,6 +596,37 @@ export async function captureBaseline(root: string, scope: ScopeEntry[], artifac
     tracked,
     index,
   };
+}
+
+export async function resolveCommit(root: string, hash: string): Promise<string> {
+  if (!/^[a-fA-F0-9]{7,64}$/.test(hash)) throw new Error('Baseline must be a hexadecimal Git commit hash.');
+  const repoRoot = await assertRepositoryRoot(root);
+  return stripOneFinalLf(await git(repoRoot, ['rev-parse', '--verify', `${hash}^{commit}`]));
+}
+
+export async function captureBaselineFromCommit(root: string, hash: string): Promise<Baseline> {
+  const repoRoot = await assertRepositoryRoot(root);
+  const commit = await resolveCommit(repoRoot, hash);
+  const raw = (await execGit(repoRoot, ['ls-tree', '-r', '-z', '--full-tree', commit], 'utf8')) as string;
+  const tracked: Record<string, PathFingerprint> = Object.create(null);
+  const index: Record<string, IndexFingerprint> = Object.create(null);
+
+  for (const entry of parseTreeEntries(raw)) {
+    if (entry.mode === '160000' || entry.type === 'commit') throw new Error(`unsupported-submodule: ${entry.path}`);
+    if (entry.type !== 'blob') throw new Error(`unsupported-tree-entry ${entry.type}: ${entry.path}`);
+    if (!['100644', '100755', '120000'].includes(entry.mode)) throw new Error(`unsupported-tree-mode ${entry.mode}: ${entry.path}`);
+    const content = (await execGit(repoRoot, ['cat-file', 'blob', entry.object], 'buffer')) as Buffer;
+    if (entry.mode === '120000') {
+      const target = content.toString('utf8');
+      if (target.includes('\0')) throw new Error(`unsupported-symlink-target: ${entry.path}`);
+      tracked[entry.path] = { kind: 'symlink', target };
+    } else {
+      tracked[entry.path] = { kind: 'file', sha256: hashBuffer(content), executable: entry.mode === '100755', mode: entry.mode === '100755' ? 0o755 : 0o644, size: content.length };
+    }
+    index[entry.path] = { mode: entry.mode, object: entry.object, stage: '0' };
+  }
+
+  return { root: repoRoot, head: commit, dirty: {}, tracked, index };
 }
 
 export async function inspectRun(baseline: Baseline, scope: ScopeEntry[], managedFiles: ManagedFiles = {}, artifactPolicy?: ArtifactPolicy, managedImplementationNotes: ManagedImplementationNotes = {}): Promise<Inspection> {

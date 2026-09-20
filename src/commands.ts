@@ -4,12 +4,12 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { loadTask, requireAutoCommitDisabled, assertClaimable, claimTask, ensureAcceptanceCriteriaState, type ControlTask } from './backlog.js';
 import { prepareCommitGuard } from './commit-guard.js';
 import { defaults, loadConfig, type PiControlConfig } from './config.js';
-import { findRoot, captureBaseline, inspectRun, fingerprintPath, git, type Inspection } from './git.js';
+import { findRoot, captureBaseline, captureBaselineFromCommit, inspectRun, fingerprintPath, git, resolveCommit, type Inspection } from './git.js';
 import { compileScope, canonicalPath, matchesScope } from './paths.js';
 import { stableDigest, verificationDigest } from './digest.js';
 import { runVerification } from './verification.js';
 import { createRun, effectiveScope, isActive, beginVerification, finishVerification, resumeRun, staleRun, addScope, waiveRun, type ImplementationRun } from './state.js';
-import { persistStateMarker, restoreStateMarker } from './state-storage.js';
+import { persistStateMarker, restoreLatestStateForTask, restoreStateMarker } from './state-storage.js';
 import { implementationPrompt, repairPrompt, verificationReport, recovery, acceptanceReviewPrompt, formatAcceptanceForConfirmation } from './prompts.js';
 import { buildAcceptanceRequest, validateAcceptanceAssessment, acceptanceReport, acceptedReviewCurrent, taskDigest, type AcceptanceRequest } from './acceptance.js';
 import { ensureMetadataCommit, inspectFinalization, readTaskFile, validateFinalTask, finalSummary, finalizationFailure, runBacklogEdit, satisfiedCriterionIndexes } from './finalization.js';
@@ -84,16 +84,19 @@ export class ControlController {
     if (this.busy) { this.notify(ctx, 'A control operation is already running.', 'warning'); return; }
     if (!ctx.isIdle()) { this.notify(ctx, 'Wait for the agent to settle before running control commands.', 'warning'); return; }
     this.busy = true;
+    let disabledRecovery = false;
     try {
-      if (this.disabled) throw new Error('State recovery failed. Start a new session after inspecting repository changes.');
+      disabledRecovery = this.disabled && name === 'implement-resume' && this.resumeArgsHasBaseline(args);
+      if (this.disabled && !disabledRecovery) throw new Error('State recovery failed. Start a new session after inspecting repository changes.');
+      if (disabledRecovery) this.disabled = false;
       if (name === 'plan' && isActive(this.run)) throw new Error('A controlled run is active. Finish it or use /control-abort before planning.');
       if (name !== 'control-abort' && isActive(this.run)) await this.recoverImplementationCommit(this.run);
       if (this.run?.phase === 'FINALIZING' && !['commit', 'control-status', 'control-abort'].includes(name)) throw new Error('Implementation is already committed. Retry /commit to finalize Backlog, or /control-abort.');
       switch (name) {
         case 'plan': await this.plan(args, ctx); break;
         case 'implement': await this.implement(args, ctx); break;
-        case 'implement-resume': await this.resume(args, ctx); break;
-        case 'verify': this.match(args, false); await this.verify(ctx, false); break;
+        case 'implement-resume': await this.resumeCommand(args, ctx); break;
+        case 'verify': await this.restoreByTaskId(args, ctx); this.match(args, false); await this.verify(ctx, false); break;
         case 'verify-waive': await this.waive(args, ctx); break;
         case 'scope-show': this.noArgs(args); await this.showScope(ctx); break;
         case 'scope-add': await this.expandScope(args, ctx); break;
@@ -101,8 +104,10 @@ export class ControlController {
         case 'control-abort': this.noArgs(args); await this.abort(ctx); break;
         case 'commit': await this.commit(args, ctx); break;
       }
-    } catch (e) { this.notify(ctx, message(e), 'error'); }
-    finally { this.busy = false; }
+    } catch (e) {
+      if (disabledRecovery && !isActive(this.run)) this.disabled = true;
+      this.notify(ctx, message(e), 'error');
+    } finally { this.busy = false; }
   }
   private async plan(args: string, ctx: ExtensionContext): Promise<void> {
     const slug = planSlug(args);
@@ -120,6 +125,32 @@ export class ControlController {
   private active(): ImplementationRun {
     if (!isActive(this.run)) throw new Error('No active run. Use /implement <task-id>.');
     return this.run;
+  }
+  private async restoreByTaskId(args: string, ctx: ExtensionContext): Promise<void> {
+    if (isActive(this.run)) return;
+    const id = args.trim();
+    if (!id) return;
+    if (/\s/.test(id)) throw new Error('Supply exactly one task ID.');
+    const root = await findRoot(ctx.cwd);
+    const run = restoreLatestStateForTask(root, id);
+    if (!run) return;
+    if (!isActive(run)) throw new Error(`Latest saved run for ${run.task.id} is ${run.phase}. Use /implement <task-id> to start a new run.`);
+    this.run = run;
+    this.persist();
+    this.notify(ctx, `Restored ${run.task.id} ${run.phase}. Automatic work is paused.`);
+  }
+  private resumeArgsHasBaseline(args: string): boolean {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    return (parts.length === 2 && (/^[a-fA-F0-9]{7,64}$/.test(parts[1]) || parts[1].startsWith('--baseline='))) || (parts.length === 3 && parts[1] === '--baseline');
+  }
+  private parseResumeArgs(args: string): { taskId: string; baseline?: string } {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return { taskId: '' };
+    if (parts.length === 1) return { taskId: parts[0] };
+    if (parts.length === 2 && /^[a-fA-F0-9]{7,64}$/.test(parts[1])) return { taskId: parts[0], baseline: parts[1] };
+    if (parts.length === 3 && parts[1] === '--baseline') return { taskId: parts[0], baseline: parts[2] };
+    if (parts.length === 2 && parts[1].startsWith('--baseline=')) return { taskId: parts[0], baseline: parts[1].slice('--baseline='.length) };
+    throw new Error('Usage: /implement-resume [task-id] [--baseline <commit>]');
   }
   private match(args: string, required: boolean): ImplementationRun {
     const run = this.active();
@@ -290,6 +321,61 @@ export class ControlController {
     } catch (e) {
       if (generation === this.generation && this.run === run) { run.phase = 'FAILED'; run.pendingAutomatic = false; run.claimPending = true; this.persist(); }
       throw new Error(`Could not start ${task.id}: ${message(e)} The Backlog task may have changed. No rollback was attempted. Inspect it, then /control-abort before retrying.`);
+    }
+  }
+  private async resumeCommand(args: string, ctx: ExtensionContext): Promise<void> {
+    const parsed = this.parseResumeArgs(args);
+    if (!isActive(this.run)) {
+      if (parsed.baseline) await this.startRunFromBaseline(parsed.taskId, parsed.baseline, ctx);
+      else await this.restoreByTaskId(parsed.taskId, ctx);
+    } else if (parsed.baseline) {
+      throw new Error('A baseline can only be supplied when no active run is loaded. Use /control-abort first if you need to replace the run state.');
+    }
+    await this.resume(parsed.taskId, ctx);
+  }
+  private async startRunFromBaseline(id: string, hash: string, ctx: ExtensionContext): Promise<void> {
+    if (!id || /\s/.test(id)) throw new Error('Usage: /implement-resume <task-id> --baseline <commit>');
+    if (this.run && isActive(this.run)) throw new Error(`${this.run.task.id} is already active. Use /control-abort before starting another run.`);
+    const root = await findRoot(ctx.cwd);
+    this.config = await loadConfig(root, this.configDirectory, ctx.isProjectTrusted());
+    await requireAutoCommitDisabled(root, this.pi.exec.bind(this.pi));
+    const commit = await resolveCommit(root, hash);
+    const head = (await git(root, ['rev-parse', 'HEAD'])).trim();
+    if (head !== commit) throw new Error(`Provided baseline ${commit} must be the current HEAD. pi-control cannot safely resume across a changed HEAD.`);
+    const task: ControlTask = ensureAcceptanceCriteriaState(await this.taskLoader(root, id, this.pi.exec.bind(this.pi)));
+    const lifecycle = assertClaimable(task, this.config);
+    if (await canonicalPath(root, lifecycle.path) !== lifecycle.path) throw new Error('Backlog task path must name a regular file without symlinks.');
+    const scope = await compileScope(root, task.allowedScope);
+    const artifactPolicy = await compileArtifactPolicy(root, this.config.untrackedArtifacts);
+    const baseline = await captureBaselineFromCommit(root, commit);
+    const before = baseline.tracked[lifecycle.path];
+    if (!before || before.kind !== 'file') throw new Error('Backlog task file must be a Git-visible regular file at the provided baseline.');
+    const run = createRun(task, baseline, scope, this.config.maxRepairAttempts);
+    run.artifactPolicy = structuredClone(artifactPolicy);
+    run.terminalStatus = this.config.terminalStatus;
+    run.phase = 'FAILED';
+    run.pendingAutomatic = false;
+    run.claimPending = true;
+    run.managedFiles = { [lifecycle.path]: before };
+    this.run = run;
+    this.persist();
+    try {
+      const claimed = await claimTask(root, task, this.config, this.pi.exec.bind(this.pi));
+      const fingerprint = await fingerprintPath(root, lifecycle.path);
+      if (fingerprint.kind !== 'file' || await canonicalPath(root, lifecycle.path) !== lifecycle.path) throw new Error('Backlog task path changed while claiming it.');
+      run.task = claimed;
+      run.claimPending = false;
+      run.managedFiles = { [lifecycle.path]: fingerprint };
+      try {
+        run.managedImplementationNotes = { [lifecycle.path]: { comparableDigest: implementationNotesComparableDigest(await readTaskFile(run)) } };
+      } catch {
+        delete run.managedImplementationNotes;
+      }
+      this.persist();
+      this.notify(ctx, `${claimed.id}: restored run state from baseline ${commit}.`);
+    } catch (e) {
+      if (this.run === run) { run.phase = 'FAILED'; run.pendingAutomatic = false; run.claimPending = true; this.persist(); }
+      throw new Error(`Could not restore ${task.id} from baseline ${commit}: ${message(e)} The Backlog task may have changed. No rollback was attempted. Inspect it, then /control-abort before retrying.`);
     }
   }
   private async resume(args: string, ctx: ExtensionContext): Promise<void> {

@@ -811,6 +811,79 @@ test('invalid restored state disables enforcement with a recovery diagnostic', a
   assert.equal(h.messages.length, 0);
 });
 
+test('verify and resume can restore saved task state in a new session', async t => {
+  const h = await setup(t);
+  await h.command('implement', 'TASK-1');
+  await writeFile(join(h.root, 'allowed'), 'work');
+  h.entries.length = 0;
+  await h.events.get('session_start')!({}, h.ctx);
+  assert.equal(h.controller.run, null);
+  await h.command('verify', 'TASK-1');
+  assert.equal(h.controller.run?.phase, 'VERIFIED', h.notices.join('\n'));
+  assert.match(h.notices.join('\n'), /Restored TASK-1 IMPLEMENTING/);
+
+  const r = await setup(t);
+  await r.command('implement', 'TASK-1');
+  r.entries.length = 0;
+  await r.events.get('session_start')!({}, r.ctx);
+  assert.equal(r.controller.run, null);
+  await r.command('implement-resume', 'TASK-1');
+  assert.equal(r.controller.run?.phase, 'IMPLEMENTING', r.notices.join('\n'));
+  assert.equal(r.messages.length, 2);
+});
+
+test('task id restore does not resurrect an aborted run', async t => {
+  const h = await setup(t);
+  await h.command('implement', 'TASK-1');
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await h.command('control-abort');
+  h.entries.length = 0;
+  await h.events.get('session_start')!({}, h.ctx);
+  await h.command('verify', 'TASK-1');
+  assert.equal(h.controller.run, null);
+  assert.match(h.notices.join('\n'), /Latest saved run for TASK-1 is ABORTED/);
+});
+
+test('resume can reconstruct run state from an explicit clean baseline commit', async t => {
+  const h = await setup(t);
+  const head = (await h.git('rev-parse', 'HEAD')).trim();
+  await writeFile(join(h.root, 'allowed'), 'work');
+  await h.command('implement-resume', `TASK-1 --baseline ${head}`);
+  assert.equal(h.controller.run?.phase, 'IMPLEMENTING', h.notices.join('\n'));
+  assert.equal(h.controller.run?.baseline.head, head);
+  assert.equal(h.messages.length, 1);
+  assert.match(h.notices.join('\n'), /restored run state from baseline/);
+  await h.command('verify', 'TASK-1');
+  assert.equal(h.controller.run?.phase, 'VERIFIED', h.notices.join('\n'));
+});
+
+test('explicit baseline resume can recover after invalid session state', async t => {
+  const h = await setup(t);
+  const head = (await h.git('rev-parse', 'HEAD')).trim();
+  await writeFile(join(h.root, 'allowed'), 'work');
+  h.pi.appendEntry('pi-control:state', { schemaVersion: 99, run: {} });
+  await h.events.get('session_start')!({}, h.ctx);
+  await h.command('implement-resume', `TASK-1 --baseline=${head}`);
+  assert.equal(h.controller.run?.phase, 'IMPLEMENTING', h.notices.join('\n'));
+  assert.equal(h.messages.length, 1);
+});
+
+test('explicit baseline resume refuses changed HEAD and loaded active state', async t => {
+  const h = await setup(t);
+  const head = (await h.git('rev-parse', 'HEAD')).trim();
+  await h.git('commit', '--allow-empty', '-qm', 'external');
+  await h.command('implement-resume', `TASK-1 --baseline ${head}`);
+  assert.equal(h.controller.run, null);
+  assert.match(h.notices.join('\n'), /must be the current HEAD/);
+
+  const r = await setup(t);
+  const activeHead = (await r.git('rev-parse', 'HEAD')).trim();
+  await r.command('implement', 'TASK-1');
+  await r.command('implement-resume', `TASK-1 --baseline ${activeHead}`);
+  assert.equal(r.messages.length, 1);
+  assert.match(r.notices.join('\n'), /baseline can only be supplied/);
+});
+
 test('mismatched IDs and denied confirmations do not change workflow state', async t => {
   const h = await setup(t, 'false');
   await h.command('implement', 'TASK-1 extra'); assert.equal(h.messages.length, 0);

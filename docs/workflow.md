@@ -32,11 +32,11 @@ Default automatic loop:
 
 `/verify` is manual and does not consume or start the repair loop. A successful verification starts a separate acceptance-review turn. `VERIFIED` describes the mechanical result; commit still requires a satisfied acceptance assessment.
 
-State is persisted with Pi session entries. On restore, an active run is paused. It does not prompt or verify by itself. Use `/control-status`, `/verify`, or `/implement-resume`.
+State is persisted in `.pi/pi-control/state/`, with Pi session entries pointing to the latest saved run. On restore, an active run is paused. It does not prompt or verify by itself. Use `/control-status`, `/verify`, or `/implement-resume`. If the Pi session has no pointer, `/verify <task-id>` and `/implement-resume <task-id>` look up the latest saved local run for that task. If those files are gone, `/implement-resume <task-id> --baseline <commit>` reconstructs a run from a clean baseline commit, but only when that commit is the current `HEAD`.
 
 ## Baseline and dirty tree rules
 
-At `/implement` start, `pi-control` records:
+At `/implement` start, or during `/implement-resume <task-id> --baseline <commit>`, `pi-control` records:
 
 - Repository root.
 - Exact `HEAD`.
@@ -44,7 +44,7 @@ At `/implement` start, `pi-control` records:
 - Dirty outside-scope fingerprints.
 - Index state.
 
-It refuses to start if anything is staged. It also refuses if any pre-existing dirty tracked or untracked path matches the task scope.
+Normal `/implement` refuses to start if anything is staged. It also refuses if any pre-existing dirty tracked or untracked path matches the task scope. Explicit-baseline resume is for a lost controller state after work already began, so it reconstructs a clean baseline from the commit instead of treating current changes as pre-existing dirt.
 
 Dirty files outside the task scope may exist at start, but they must stay byte-for-byte and metadata equivalent. The only exception is the active Backlog task file changed by the controller's claim operation. Its post-claim content and mode must remain exact. Other changes fail verification.
 
