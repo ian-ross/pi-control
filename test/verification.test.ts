@@ -34,6 +34,7 @@ async function makeRepo(): Promise<{ repo: string; head: string }> {
 
 test("runVerification runs commands sequentially and reports every failure", async () => {
   const seen: string[] = [];
+  const starts: string[] = [];
   const result = await runVerification(
     {
       baseline: { root: "/tmp/repo", head: "a".repeat(40), dirty: {}, tracked: {}, index: {} },
@@ -41,6 +42,7 @@ test("runVerification runs commands sequentially and reports every failure", asy
       scope: [{ text: "src/a.ts", kind: "file", pattern: "src/a.ts" }],
       shell: "/bin/bash",
       timeoutMs: 1000,
+      onCommandStart: ({ command, index, total }) => starts.push(`${index}/${total} ${command}`),
     },
     {
       inspectRun: () => ({
@@ -60,6 +62,7 @@ test("runVerification runs commands sequentially and reports every failure", asy
     },
   );
 
+  assert.deepEqual(starts, ["1/2 first", "2/2 second"]);
   assert.deepEqual(seen, ["first", "second"]);
   assert.equal(result.commands.length, 2);
   assert.equal(result.checksOk, false);

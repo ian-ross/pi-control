@@ -19,6 +19,12 @@ export interface VerificationResult {
   changedPaths: string[];
 }
 
+export interface VerificationCommandStart {
+  command: string;
+  index: number;
+  total: number;
+}
+
 export interface VerificationInput {
   baseline: Baseline;
   task: ControlTask;
@@ -29,6 +35,7 @@ export interface VerificationInput {
   shell: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  onCommandStart?: (event: VerificationCommandStart) => void;
 }
 
 export type RunnerDependency =
@@ -85,13 +92,14 @@ export async function runVerification(input: VerificationInput, deps: Verificati
   const commandResults: CommandResult[] = [];
 
   let stopForCancellation = input.signal?.aborted === true;
-  for (const command of commands) {
+  for (const [offset, command] of commands.entries()) {
     if (stopForCancellation || input.signal?.aborted) {
       stopForCancellation = true;
       commandResults.push(cancelledCommandResult(command));
       continue;
     }
 
+    input.onCommandStart?.({ command, index: offset + 1, total: commands.length });
     const result = await runOne(runner, {
       command,
       shell: input.shell,

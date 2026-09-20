@@ -27,13 +27,14 @@ function reviewFor(request: Parameters<AcceptanceReviewer>[0]) {
 
 const satisfiedReview: AcceptanceReviewer = async request => reviewFor(request);
 
-async function setup(t: TestContext, check = 'true', trackTask = true, options: SetupOptions = {}) {
+async function setup(t: TestContext, check: string | string[] = 'true', trackTask = true, options: SetupOptions = {}) {
   const root = await mkdtemp(join(tmpdir(), 'control-command-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   async function git(...args: string[]) { return (await exec('git', args, { cwd: root })).stdout; }
   await git('init', '-q'); await git('config', 'user.email', 'test@example.test'); await git('config', 'user.name', 'Test');
   await writeFile(join(root, 'allowed'), 'base'); await writeFile(join(root, 'outside'), 'base');
-  const task: ControlTask = { id: 'TASK-1', title: 'Fixture', description: 'Only this task', implementationPlan: '1. Update allowed without changing outside.\n2. Check the task behavior and edge cases.', acceptanceCriteria: ['Works'], allowedScope: ['allowed', 'new file', '-dash', 'delete me'], verificationCommands: [check], lifecycle: { path: 'backlog/tasks/task-1.md', status: 'To Do', assignees: [] } };
+  const verificationCommands = Array.isArray(check) ? check : [check];
+  const task: ControlTask = { id: 'TASK-1', title: 'Fixture', description: 'Only this task', implementationPlan: '1. Update allowed without changing outside.\n2. Check the task behavior and edge cases.', acceptanceCriteria: ['Works'], allowedScope: ['allowed', 'new file', '-dash', 'delete me'], verificationCommands, lifecycle: { path: 'backlog/tasks/task-1.md', status: 'To Do', assignees: [] } };
   await mkdir(join(root, 'backlog/tasks'), { recursive: true });
   const saveTask = () => writeFile(join(root, task.lifecycle!.path), `---\nid: ${task.id}\ntitle: ${task.title}\nstatus: ${task.lifecycle!.status}\nassignee: ${JSON.stringify(task.lifecycle!.assignees)}\n---\n\n${task.description}\n\n## Acceptance Criteria\n<!-- AC:BEGIN -->\n${task.acceptanceCriteria.map((text, i) => `- [${task.acceptanceCriteriaState?.[i]?.checked ? 'x' : ' '}] #${i + 1} ${text}`).join('\n')}\n<!-- AC:END -->\n\n## Implementation Plan\n${task.implementationPlan}\n${task.finalSummary === undefined ? '' : `\n## Final Summary\n\n<!-- SECTION:FINAL_SUMMARY:BEGIN -->\n${task.finalSummary}\n<!-- SECTION:FINAL_SUMMARY:END -->\n`}`);
   await saveTask();
@@ -423,6 +424,19 @@ test('implementation persists before one prompt, succeeds on settle, unrelated s
   assert.equal(h.messages.length, 1);
   assert.match(h.messages[0], /Only this task/);
   assert.ok(h.messages[0].includes(h.task.implementationPlan!));
+});
+
+test('verify reports each Definition of Done command before running it', async t => {
+  const h = await setup(t, ['true', 'node -e "process.exit(0)"']);
+  await h.command('implement', 'TASK-1');
+  await writeFile(join(h.root, 'allowed'), 'change');
+  await h.command('verify');
+  const progress = h.notices.filter(notice => notice.includes('running Definition of Done'));
+  assert.deepEqual(progress, [
+    'TASK-1: running Definition of Done 1/2: true',
+    'TASK-1: running Definition of Done 2/2: node -e "process.exit(0)"',
+  ]);
+  assert.ok(h.notices.indexOf(progress[0]) < h.notices.findIndex(notice => notice.includes('Result: VERIFIED')));
 });
 
 test('failure permits exactly two repairs and manual verification never repairs', async t => {

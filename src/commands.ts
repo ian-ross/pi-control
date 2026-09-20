@@ -24,6 +24,10 @@ const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 const samePaths = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 const nulPaths = (s: string) => s.split('\0').filter(Boolean);
 const quote = (s: string) => JSON.stringify(s);
+const progressCommand = (command: string) => {
+  const oneLine = command.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+  return oneLine.length > 200 ? `${oneLine.slice(0, 197)}...` : oneLine;
+};
 const ACCEPTANCE_READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols', 'lsp_diagnostics', 'pi_control_acceptance_review']);
 
 export class ControlController {
@@ -320,7 +324,18 @@ export class ControlController {
     beginVerification(run);
     this.persist();
     try {
-      const result = await this.verifier({ baseline: run.baseline, task: run.task, scope: effectiveScope(run), managedFiles: run.managedFiles, managedImplementationNotes: run.managedImplementationNotes, artifactPolicy: run.artifactPolicy, shell: this.config.shell, timeoutMs: this.config.verificationTimeoutMs, signal });
+      const result = await this.verifier({
+        baseline: run.baseline,
+        task: run.task,
+        scope: effectiveScope(run),
+        managedFiles: run.managedFiles,
+        managedImplementationNotes: run.managedImplementationNotes,
+        artifactPolicy: run.artifactPolicy,
+        shell: this.config.shell,
+        timeoutMs: this.config.verificationTimeoutMs,
+        signal,
+        onCommandStart: ({ command, index, total }) => this.notify(ctx, `${run.task.id}: running Definition of Done ${index}/${total}: ${progressCommand(command)}`),
+      });
       if (generation !== this.generation) return;
       await requireAutoCommitDisabled(run.baseline.root, this.pi.exec.bind(this.pi));
       if (generation !== this.generation) return;
