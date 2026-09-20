@@ -44,13 +44,15 @@ From your project's root, install the extensions:
 ```bash
 pi install -l git:github.com/ian-ross/plannotator@plannotator-pi
 pi install -l npm:pi-rules
-pi install -l git:github.com/earendil-works/pi-review
+pi install -l git:github.com/ian-ross/pi-review
 pi install -l npm:pi-answer@0.1.4
 pi install -l git:github.com/ian-ross/pi-control
 ```
 
 Use my fork of Plannotator as shown above. Some other releases document a
 plan-file argument but ignore it, so `/plan` cannot select the intended file.
+Also use my fork of `pi-review`, which returns more compact summaries and has
+a "fixes only" return mode that helps prevent context blowup.
 
 These commands install packages for the local project only. Omit `-l` for a
 user-global installation.
