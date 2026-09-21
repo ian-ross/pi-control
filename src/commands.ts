@@ -16,6 +16,7 @@ import { ensureMetadataCommit, inspectFinalization, readTaskFile, validateFinalT
 import { compileArtifactPolicy } from './artifacts.js';
 import { implementationNotesComparableDigest } from './metadata.js';
 import { nextPlanPath, planSlug } from './plans.js';
+import { buildCoAuthorTrailerArgs } from './co-author.js';
 
 export const STATE_ENTRY = 'pi-control:state';
 export type AcceptanceReviewer = (request: AcceptanceRequest, ctx: ExtensionContext) => Promise<unknown | null>;
@@ -561,6 +562,7 @@ export class ControlController {
     this.commitEligible(run, current);
     const commitMessage = parsed[2]?.trim() || `${run.task.id}: ${run.task.title}`;
     if (commitMessage.includes('\0')) throw new Error('Commit message cannot contain NUL.');
+    const trailerArgs = buildCoAuthorTrailerArgs(ctx.model);
     const paths = current.changedPaths;
     const implementationPaths = paths.filter(p => !Object.hasOwn(run.managedFiles ?? {}, p));
     const digest = this.digest(run, current);
@@ -590,7 +592,7 @@ export class ControlController {
       live();
       run.finalization!.implementationExpectedDiff = expectedDiff;
       this.persist();
-      await this.gitMutation(run, ['-c', `core.hooksPath=${guard.directory}`, 'commit', '-m', commitMessage]);
+      await this.gitMutation(run, ['-c', `core.hooksPath=${guard.directory}`, 'commit', '-m', commitMessage, ...trailerArgs]);
       live();
       const sha = (await git(run.baseline.root, ['rev-parse', 'HEAD'])).trim();
       const actualDiff = await git(run.baseline.root, ['diff', '--raw', '-z', '--no-renames', '--abbrev=64', run.baseline.head, sha, '--']);
@@ -659,7 +661,7 @@ export class ControlController {
           journal.metadataExpectedDiff = await git(run.baseline.root, ['diff', '--cached', '--raw', '-z', '--no-renames', '--abbrev=64', head, '--']);
           delete journal.error;
           this.persist();
-          await this.gitMutation(run, ['-c', `core.hooksPath=${guard.directory}`, 'commit', '-m', `${run.task.id}: finalize Backlog metadata`]);
+          await this.gitMutation(run, ['-c', `core.hooksPath=${guard.directory}`, 'commit', '-m', `${run.task.id}: finalize Backlog metadata`, ...buildCoAuthorTrailerArgs(ctx.model)]);
           const sha = (await git(run.baseline.root, ['rev-parse', 'HEAD'])).trim();
           await ensureMetadataCommit(run.baseline.root, head, sha, path, journal.metadataExpectedDiff);
           const committed = await validate(sha);

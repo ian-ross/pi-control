@@ -704,6 +704,22 @@ test('commit stages only actual changed paths, unusual names and messages stay l
   assert.ok(!h.calls.some(c => c.includes('push')));
 });
 
+test('commit adds active model co-author trailers to both commits', async t => {
+  const h = await setup(t);
+  (h.ctx as unknown as { model: { provider: string; id: string; name: string } }).model = { provider: 'OpenAI', id: 'GPT 4.1/Code', name: 'GPT <4.1>\nCode' };
+  await h.command('implement', 'TASK-1');
+  await writeFile(join(h.root, 'allowed'), 'work');
+  await h.command('verify');
+  await h.command('commit', 'TASK-1 modeled commit');
+  assert.equal(h.controller.run?.phase, 'COMMITTED', h.notices.join('\n'));
+  const implementationMessage = await h.git('log', '-1', '--format=%B', h.controller.run!.implementationCommitSha!);
+  const metadataMessage = await h.git('log', '-1', '--format=%B', h.controller.run!.metadataCommitSha!);
+  for (const message of [implementationMessage, metadataMessage]) {
+    assert.match(message, /Co-authored-by: GPT 4\.1 Code <openai-gpt-4\.1\/code@pi\.local>/);
+    assert.match(message, /Pi-Model: OpenAI\/GPT 4\.1\/Code/);
+  }
+});
+
 test('stale or staged outside content prevents commit; hook failure remains recoverable', async t => {
   const h = await setup(t);
   await h.command('implement', 'TASK-1'); await writeFile(join(h.root, 'allowed'), 'work'); await h.command('verify');
