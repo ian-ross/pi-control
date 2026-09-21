@@ -55,6 +55,7 @@ export class ControlController {
   }
   persist(): void { this.pi.appendEntry(STATE_ENTRY, persistStateMarker(this.run)); }
   async initialize(ctx: ExtensionContext, reason: 'session' | 'tree' = 'session'): Promise<void> {
+    const previousRun = this.run;
     this.restoreReviewTools({ consume: reason !== 'tree' });
     this.generation++;
     this.abortController?.abort();
@@ -65,6 +66,10 @@ export class ControlController {
       const entries = ctx.sessionManager.getBranch().filter(e => e.type === 'custom' && e.customType === STATE_ENTRY);
       const latest = entries.at(-1);
       if (latest?.type === 'custom') this.run = restoreStateMarker(latest.data);
+      if (reason === 'tree' && this.isOlderPendingAcceptance(this.run, previousRun)) {
+        this.run = previousRun;
+        this.persist();
+      }
       if (this.run?.activeToolsBeforeAcceptance) this.restoreReviewTools({ consume: false });
       if (isActive(this.run)) this.notify(ctx, `Restored ${this.run.task.id} ${this.run.phase}. Automatic work is paused. Use /control-status, /verify, or /implement-resume.`);
     } catch (e) {
@@ -80,6 +85,12 @@ export class ControlController {
     }
   }
   shutdown(): void { this.restoreReviewTools(); this.generation++; this.abortController?.abort(); this.context = undefined; }
+  private isOlderPendingAcceptance(current: ImplementationRun | null, previous: ImplementationRun | null): previous is ImplementationRun {
+    if (!current?.acceptanceRequest || !previous || !acceptedReviewCurrent(previous) || !previous.acceptanceReview) return false;
+    return previous.task.id === current.acceptanceRequest.taskId
+      && previous.acceptanceReview.taskDigest === current.acceptanceRequest.taskDigest
+      && previous.acceptanceReview.codeDigest === current.acceptanceRequest.codeDigest;
+  }
   async execute(name: string, args: string, ctx: ExtensionContext): Promise<void> {
     this.context = ctx;
     if (this.busy) { this.notify(ctx, 'A control operation is already running.', 'warning'); return; }

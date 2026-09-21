@@ -602,32 +602,28 @@ test('acceptance review restores active tools when pending review becomes stale'
   assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
 });
 
-test('pending acceptance tool snapshot survives review branch navigation', async t => {
+test('accepted review state survives branching back to the acceptance prompt', async t => {
   const h = await setup(t, 'true', true, { acceptanceReviewer: null, toolProtocol: true });
   await h.command('implement', 'TASK-1');
   await writeFile(join(h.root, 'allowed'), 'work');
   await h.command('verify');
-  assert.ok(h.controller.run?.acceptanceRequest);
+  const request = h.controller.run?.acceptanceRequest;
+  assert.ok(request);
   assert.deepEqual(h.getActiveTools().sort(), ['find', 'grep', 'ls', 'lsp_hover', 'pi_control_acceptance_review', 'read'].sort());
 
-  const originalEntries = [...h.entries];
+  const pendingAcceptanceBranch = [...h.entries];
+  await h.controller.receiveAcceptanceTool(reviewFor(request), h.ctx);
+  assert.equal(h.controller.run?.acceptanceReview?.accepted, true);
+  assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
+
   h.entries.length = 0;
+  h.entries.push(...pendingAcceptanceBranch);
   await h.events.get('session_tree')!({}, h.ctx);
-  assert.equal(h.controller.run, null);
+  const branchedRun = h.controller.run as ImplementationRun | null;
+  assert.equal(branchedRun?.acceptanceRequest, undefined);
+  assert.equal(branchedRun?.acceptanceReview?.accepted, true);
   assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
-
-  h.pi.setActiveTools(['read', 'grep', 'find', 'ls', 'lsp_hover', 'pi_control_acceptance_review']);
-  h.entries.push(...originalEntries);
-  await h.events.get('session_tree')!({}, h.ctx);
-  const returnedRun = h.controller.run as ImplementationRun | null;
-  assert.ok(returnedRun?.acceptanceRequest);
-  assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
-
-  await h.command('implement-resume');
-  const resumedRun = h.controller.run as ImplementationRun | null;
-  assert.equal(resumedRun?.phase, 'IMPLEMENTING');
-  assert.equal(resumedRun?.acceptanceRequest, undefined);
-  assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
+  assert.equal(await h.events.get('tool_call')!({ toolName: 'bash', input: { command: 'git status' } }, h.ctx), undefined);
 });
 
 test('scope addition and abort require confirmation, never register LLM tools', async t => {
