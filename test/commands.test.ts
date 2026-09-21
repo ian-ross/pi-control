@@ -616,6 +616,16 @@ test('accepted review state survives branching back to the acceptance prompt', a
   assert.equal(h.controller.run?.acceptanceReview?.accepted, true);
   assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
 
+  const acceptedBranch = [...h.entries];
+  h.pi.setActiveTools(['read', 'grep', 'find', 'ls', 'lsp_hover', 'pi_control_acceptance_review']);
+  h.controller.run = null;
+  h.entries.length = 0;
+  h.entries.push(...acceptedBranch);
+  await h.events.get('session_tree')!({}, h.ctx);
+  const restoredAcceptedRun = h.controller.run as ImplementationRun | null;
+  assert.equal(restoredAcceptedRun?.acceptanceReview?.accepted, true);
+  assert.deepEqual(h.getActiveTools().sort(), ['bash', 'find', 'grep', 'ls', 'lsp_hover', 'read', 'write'].sort());
+
   h.entries.length = 0;
   h.entries.push(...pendingAcceptanceBranch);
   await h.events.get('session_tree')!({}, h.ctx);

@@ -182,6 +182,8 @@ export class ControlController {
     if (options.consume ?? true) {
       this.savedActiveTools = undefined;
       if (this.run) delete this.run.activeToolsBeforeAcceptance;
+    } else if (this.run?.activeToolsBeforeAcceptance) {
+      this.savedActiveTools = undefined;
     }
   }
   private async assertAcceptanceCurrent(run: ImplementationRun, request: AcceptanceRequest, ctx: ExtensionContext, generation: number, requirePending: boolean): Promise<void> {
@@ -215,7 +217,7 @@ export class ControlController {
     const review = validateAcceptanceAssessment(raw, request);
     delete run.acceptanceRequest;
     run.acceptanceReview = review;
-    this.restoreReviewTools();
+    this.restoreReviewTools({ consume: false });
     if (!review.accepted) {
       run.phase = 'FAILED';
       run.pendingAutomatic = false;
@@ -668,6 +670,7 @@ export class ControlController {
       live();
       run.phase = 'COMMITTED';
       run.pendingAutomatic = false;
+      delete run.activeToolsBeforeAcceptance;
       delete journal.error;
       this.persist();
       this.notify(ctx, `${run.task.id}: COMMITTED ${run.implementationCommitSha}. Backlog finalized ${run.metadataCommitSha}. No push.`);
