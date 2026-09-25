@@ -30,7 +30,7 @@ See the [manual task example](backlog-tasks.md#create-a-task-manually).
 
 ## Verification or acceptance review stopped
 
-Use `/implement-resume <task-id>` to continue repairs after a failed run. It rechecks the saved baseline and resets the automatic repair budget. Use `/verify` to rerun checks and request a fresh acceptance review after an interruption. Acceptance review cannot be waived.
+Use `/implement-resume <task-id>` to continue repairs after a failed run. It rechecks the saved baseline and resets the automatic repair budget. Use `/verify` to rerun checks and request a fresh acceptance review after an interruption. Use `/acceptance-waive <task-id> <reason>` only when a human accepts criteria that the review marked blocked.
 
 If checks generate disposable cache files, prefer `.gitignore` or configure [artifact exclusions](configuration.md#disposable-cache-files) before starting a new run. Commands that change other Git-visible content fail verification.
 

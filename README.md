@@ -195,9 +195,10 @@ ends a run after confirmation, but does not revert files or release the task cla
 
 A human can waive eligible command failures with
 `/verify-waive BACK-123 upstream service unavailable`. A waiver records the
-failure and reason; it does not turn a failed check into a pass. Scope failures,
-task changes, and acceptance review cannot be waived. See
-[waiver rules](docs/workflow.md#waivers) and [troubleshooting](docs/troubleshooting.md).
+failure and reason; it does not turn a failed check into a pass. Scope failures
+and task changes cannot be waived. If the read-only acceptance review blocks on
+a criterion that a human accepts, use `/acceptance-waive BACK-123 <reason>`.
+See [waiver rules](docs/workflow.md#waivers) and [troubleshooting](docs/troubleshooting.md).
 
 ### Review and commit
 
@@ -236,6 +237,7 @@ behavior and suggested external permission rules.
 | `/implement-resume [task-id] [--baseline <commit>]` | Resumes a failed or restored run after rechecking its baseline. With a task ID and current `HEAD` commit, reconstructs missing run state from that clean baseline. |
 | `/verify [task-id]` | Runs scope and command checks, then requests acceptance review on success. Does not start a repair loop. |
 | `/verify-waive <task-id> <reason>` | Records a confirmed human waiver for eligible failed commands. |
+| `/acceptance-waive <task-id> <reason>` | Records a confirmed human override for blocked acceptance criteria. |
 | `/scope-show` | Shows task scope, run-local additions, and the frozen artifact policy. |
 | `/scope-add <scope-entry>` | Adds one run-local scope entry after confirmation. Use the path or glob directly, without shell quotes. |
 | `/control-status` | Shows the active task, phase, baseline, scope, repair count, latest verification, and freshness. |

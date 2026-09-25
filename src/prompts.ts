@@ -67,4 +67,4 @@ function taskPlan(run: ImplementationRun): string[] {
   return run.task.implementationPlan ? ['Task implementation plan:', run.task.implementationPlan] : [];
 }
 
-export const recovery = 'Next: /verify, /implement-resume, /scope-add, /verify-waive for eligible command failures, or /control-abort.';
+export const recovery = 'Next: /verify, /implement-resume, /scope-add, /verify-waive for eligible command failures, /acceptance-waive for blocked acceptance criteria, or /control-abort.';

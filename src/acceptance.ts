@@ -135,6 +135,16 @@ export function acceptedReviewCurrent(run: ImplementationRun): boolean {
     && run.acceptanceReview.codeDigest === run.latest.digest;
 }
 
+export function acceptanceGateCurrent(run: ImplementationRun): boolean {
+  if (!run.acceptanceReview || !run.latest) return false;
+  if (run.acceptanceReview.taskDigest !== taskDigest(run.task) || run.acceptanceReview.codeDigest !== run.latest.digest) return false;
+  if (run.acceptanceReview.accepted) return true;
+  const waiver = run.acceptanceWaiver;
+  if (!waiver || waiver.taskDigest !== run.acceptanceReview.taskDigest || waiver.codeDigest !== run.acceptanceReview.codeDigest) return false;
+  const waived = new Set(waiver.criteria);
+  return run.acceptanceReview.criteria.every(criterion => criterion.status === 'satisfied' || waived.has(criterion.id));
+}
+
 export function acceptanceReport(review: AcceptanceReview): string {
   return [
     `Acceptance: ${review.accepted ? 'SATISFIED' : 'BLOCKED'}`,

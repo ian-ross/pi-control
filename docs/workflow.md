@@ -87,7 +87,7 @@ The reviewer assesses every criterion as `satisfied`, `unsatisfied`, or `uncerta
 
 The assessment binds to the checked task definition and code digest. Changing either invalidates it. Existing human checkmarks remain intact but do not count as review evidence. The controller writes no automated checkmarks before commit, so a stale assessment cannot leave new checkmarks behind.
 
-Commit confirmation shows the assessment, evidence, and proposed final summary. Known command failures and their waiver reason appear in the final summary. Acceptance review has no waiver. An unsatisfied or uncertain result pauses the run as `FAILED`; use `/implement-resume` to repair it. A malformed response stays unaccepted. Use `/verify` to request a fresh review after interruption or restoration.
+Commit confirmation shows the assessment, evidence, and proposed final summary. Known command failures and their waiver reason appear in the final summary. A blocked acceptance review pauses the run as `FAILED`; use `/implement-resume` to repair it, or `/acceptance-waive <task-id> <reason>` when a human accepts the blocked criteria. A malformed response stays unaccepted. Use `/verify` to request a fresh review after interruption or restoration.
 
 ## Waivers
 
@@ -104,6 +104,18 @@ A waiver requires:
 - Interactive confirmation.
 
 A waived commit uses a stronger confirmation and shows the waiver reason and failed commands.
+
+`/acceptance-waive` records a human override for a current blocked acceptance review. It requires:
+
+- Verification passed, or command failures were already waived.
+- A current acceptance review with at least one unsatisfied or uncertain criterion.
+- No scope failure.
+- No changed `HEAD`.
+- No task definition change.
+- A non-empty reason.
+- Interactive confirmation.
+
+The override binds to the same task and code digests as the blocked review. If either changes, the override becomes stale. Commit confirmation and the final summary show the human override reason and waived criteria.
 
 ## Scope enforcement limits
 

@@ -787,6 +787,53 @@ test('metadata commit hooks that leave unexpected changes do not complete finali
   assert.equal(h.controller.run?.metadataCommitSha, undefined);
 });
 
+test('acceptance waiver can overrule a blocked current acceptance review', async t => {
+  const blocked: AcceptanceReviewer = async request => ({
+    taskId: request.taskId,
+    taskDigest: request.taskDigest,
+    codeDigest: request.codeDigest,
+    summary: 'One criterion is still blocked.',
+    criteria: request.criteria.map(criterion => ({ id: criterion.id, status: 'unsatisfied', evidence: ['manual inspection disagreed'] })),
+  });
+  const h = await setup(t, 'true', true, { acceptanceReviewer: blocked });
+  await h.command('implement', 'TASK-1');
+  await writeFile(join(h.root, 'allowed'), 'work');
+  await h.command('verify');
+  assert.equal(h.controller.run?.phase, 'FAILED');
+  assert.equal(h.controller.run?.acceptanceReview?.accepted, false);
+  await h.command('commit', 'TASK-1');
+  assert.notEqual(h.controller.run?.phase, 'COMMITTED');
+  await h.command('acceptance-waive', 'TASK-1 reviewed by human');
+  assert.equal(h.controller.run?.phase, 'VERIFIED');
+  assert.deepEqual(h.controller.run?.acceptanceWaiver?.criteria, ['1']);
+  await h.command('commit', 'TASK-1 acceptance override');
+  assert.equal(h.controller.run?.phase, 'COMMITTED', h.notices.join('\n'));
+  assert.match(h.confirmations.at(-1)!, /Human acceptance override: reviewed by human/);
+  assert.match(await h.git('show', `HEAD:${h.task.lifecycle!.path}`), /Human acceptance override: reviewed by human/);
+});
+
+test('acceptance waiver requires confirmation and refuses content races', async t => {
+  const blocked: AcceptanceReviewer = async request => ({
+    taskId: request.taskId,
+    taskDigest: request.taskDigest,
+    codeDigest: request.codeDigest,
+    summary: 'Blocked.',
+    criteria: request.criteria.map(criterion => ({ id: criterion.id, status: 'uncertain', evidence: ['not enough evidence'] })),
+  });
+  const h = await setup(t, 'true', true, { acceptanceReviewer: blocked });
+  await h.command('implement', 'TASK-1');
+  await writeFile(join(h.root, 'allowed'), 'work');
+  await h.command('verify');
+  h.deny();
+  await h.command('acceptance-waive', 'TASK-1 no');
+  assert.equal(h.controller.run?.acceptanceWaiver, undefined);
+  h.ctx.ui.confirm = async () => { await writeFile(join(h.root, 'allowed'), 'raced'); return true; };
+  await h.command('acceptance-waive', 'TASK-1 race');
+  assert.equal(h.controller.run?.phase, 'FAILED');
+  assert.equal(h.controller.run?.acceptanceReview, undefined);
+  assert.equal(h.controller.run?.acceptanceWaiver, undefined);
+});
+
 test('waived commit confirmation includes reason and fails closed without UI', async t => {
   const h = await setup(t, 'false');
   await h.command('implement', 'TASK-1'); await writeFile(join(h.root, 'allowed'), 'work'); await h.command('verify');

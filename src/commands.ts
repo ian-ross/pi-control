@@ -8,10 +8,10 @@ import { findRoot, captureBaseline, captureBaselineFromCommit, inspectRun, finge
 import { compileScope, canonicalPath, matchesScope } from './paths.js';
 import { stableDigest, verificationDigest } from './digest.js';
 import { runVerification } from './verification.js';
-import { createRun, effectiveScope, isActive, beginVerification, finishVerification, resumeRun, staleRun, addScope, waiveRun, type ImplementationRun } from './state.js';
+import { createRun, effectiveScope, isActive, beginVerification, finishVerification, resumeRun, staleRun, addScope, waiveRun, waiveAcceptanceRun, type ImplementationRun } from './state.js';
 import { persistStateMarker, restoreLatestStateForTask, restoreStateMarker } from './state-storage.js';
 import { implementationPrompt, repairPrompt, verificationReport, recovery, acceptanceReviewPrompt, formatAcceptanceForConfirmation } from './prompts.js';
-import { buildAcceptanceRequest, validateAcceptanceAssessment, acceptanceReport, acceptedReviewCurrent, taskDigest, type AcceptanceRequest } from './acceptance.js';
+import { buildAcceptanceRequest, validateAcceptanceAssessment, acceptanceReport, acceptedReviewCurrent, acceptanceGateCurrent, taskDigest, type AcceptanceRequest } from './acceptance.js';
 import { ensureMetadataCommit, inspectFinalization, readTaskFile, validateFinalTask, finalSummary, finalizationFailure, runBacklogEdit, satisfiedCriterionIndexes } from './finalization.js';
 import { compileArtifactPolicy } from './artifacts.js';
 import { implementationNotesComparableDigest } from './metadata.js';
@@ -111,6 +111,7 @@ export class ControlController {
         case 'implement-resume': await this.resumeCommand(args, ctx); break;
         case 'verify': await this.restoreByTaskId(args, ctx); this.match(args, false); await this.verify(ctx, false); break;
         case 'verify-waive': await this.waive(args, ctx); break;
+        case 'acceptance-waive': await this.waiveAcceptance(args, ctx); break;
         case 'scope-show': this.noArgs(args); await this.showScope(ctx); break;
         case 'scope-add': await this.expandScope(args, ctx); break;
         case 'control-status': this.noArgs(args); await this.status(ctx); break;
@@ -474,6 +475,24 @@ export class ControlController {
     this.notify(ctx, `${run.task.id}: WAIVED. ${parsed[2]}`);
     await this.assessAcceptance(ctx);
   }
+  private async waiveAcceptance(args: string, ctx: ExtensionContext): Promise<void> {
+    const parsed = /^(\S+)\s+([\s\S]+)$/.exec(args.trim());
+    if (!parsed || !parsed[2].trim()) throw new Error('Usage: /acceptance-waive <task-id> <reason>');
+    const run = this.match(parsed[1], true);
+    const current = await this.refresh(ctx);
+    if (!current.scopeOk) throw new Error(`Scope and baseline failures cannot be waived:\n${current.errors.join('\n')}`);
+    const digest = this.digest(run, current);
+    if (!run.latest || run.latest.digest !== digest) throw new Error('Verification is stale. Run /verify again.');
+    const proposed = structuredClone(run);
+    waiveAcceptanceRun(proposed, parsed[2]);
+    const blocked = proposed.acceptanceWaiver!.criteria.join(', ');
+    await this.confirmed(ctx, `Waive blocked acceptance for ${run.task.id}?`, `${parsed[2]}\nBlocked criteria: ${blocked}\nThis records a human acceptance override.`);
+    const again = await this.refresh(ctx);
+    if (!again.scopeOk || this.digest(run, again) !== digest) throw new Error('Repository changed during confirmation. Run /verify again.');
+    waiveAcceptanceRun(run, parsed[2]);
+    this.persist();
+    this.notify(ctx, `${run.task.id}: acceptance WAIVED. ${parsed[2]}`);
+  }
   private async showScope(ctx: ExtensionContext): Promise<void> {
     const run = this.active();
     await this.refresh(ctx);
@@ -503,7 +522,8 @@ export class ControlController {
     const run = this.run;
     const current = await this.refresh(ctx);
     const fresh = !!run.latest && current.scopeOk && this.digest(run, current) === run.latest.digest;
-    this.notify(ctx, `${run.task.id}: ${run.phase}${run.restored ? ' restored, paused' : ''}\nBacklog claim: ${run.task.lifecycle ? `${run.task.lifecycle.status}, ${run.task.lifecycle.assignees.join(', ')}` : 'legacy run'}\nBaseline: ${run.baseline.head}\nScope: ${effectiveScope(run).map(s => quote(s.text)).join(', ')}\nRepairs: ${run.repairs}/${run.maxRepairAttempts}\nLatest: ${run.latest ? `${run.latest.passed ? 'PASS' : 'FAIL'}, ${fresh ? 'current' : 'stale'}` : 'none'}\nAcceptance: ${run.acceptanceReview ? `${run.acceptanceReview.accepted ? 'SATISFIED' : 'BLOCKED'}, ${fresh && run.acceptanceReview.taskDigest === taskDigest(run.task) && run.acceptanceReview.codeDigest === run.latest?.digest ? 'current' : 'stale'}` : run.acceptanceRequest ? 'pending' : 'none'}\n${current.errors.join('\n')}`);
+    const acceptanceState = run.acceptanceReview ? `${acceptanceGateCurrent(run) ? (run.acceptanceReview.accepted ? 'SATISFIED' : 'WAIVED') : 'BLOCKED'}, ${fresh && run.acceptanceReview.taskDigest === taskDigest(run.task) && run.acceptanceReview.codeDigest === run.latest?.digest ? 'current' : 'stale'}` : run.acceptanceRequest ? 'pending' : 'none';
+    this.notify(ctx, `${run.task.id}: ${run.phase}${run.restored ? ' restored, paused' : ''}\nBacklog claim: ${run.task.lifecycle ? `${run.task.lifecycle.status}, ${run.task.lifecycle.assignees.join(', ')}` : 'legacy run'}\nBaseline: ${run.baseline.head}\nScope: ${effectiveScope(run).map(s => quote(s.text)).join(', ')}\nRepairs: ${run.repairs}/${run.maxRepairAttempts}\nLatest: ${run.latest ? `${run.latest.passed ? 'PASS' : 'FAIL'}, ${fresh ? 'current' : 'stale'}` : 'none'}\nAcceptance: ${acceptanceState}\n${current.errors.join('\n')}`);
   }
   private async abort(ctx: ExtensionContext): Promise<void> {
     this.restoreReviewTools();
@@ -517,7 +537,7 @@ export class ControlController {
     if (!['VERIFIED', 'WAIVED'].includes(run.phase) || !run.latest || this.digest(run, current) !== run.latest.digest) throw new Error('Commit requires current VERIFIED or WAIVED state. Run /verify.');
     if (!current.scopeOk) throw new Error(`Cannot commit:\n${current.errors.join('\n')}`);
     if (run.phase === 'WAIVED' && run.waiver?.digest !== run.latest.digest) throw new Error('Waiver is stale. Run /verify.');
-    if (!acceptedReviewCurrent(run)) throw new Error('Commit requires a current satisfied acceptance review. Run /verify and complete the read-only review.');
+    if (!acceptanceGateCurrent(run)) throw new Error('Commit requires a current satisfied or human-waived acceptance review. Run /verify and complete the read-only review.');
     const outside = current.stagedPaths.filter(p => !current.changedPaths.includes(p));
     if (outside.length) throw new Error(`Staged paths outside task changes: ${outside.map(quote).join(', ')}`);
     const implementationPaths = current.changedPaths.filter(p => !Object.hasOwn(run.managedFiles ?? {}, p));
@@ -535,7 +555,7 @@ export class ControlController {
     if (this.run !== run || run.implementationCommitSha || !expected) return false;
     const sha = (await git(run.baseline.root, ['rev-parse', 'HEAD'])).trim();
     if (sha === run.baseline.head) return false;
-    if (!acceptedReviewCurrent(run)) throw new Error('Pending implementation commit has no current acceptance review. Inspect Git history manually.');
+    if (!acceptanceGateCurrent(run)) throw new Error('Pending implementation commit has no current acceptance review. Inspect Git history manually.');
     const parent = (await git(run.baseline.root, ['rev-parse', `${sha}^`])).trim();
     const diff = await git(run.baseline.root, ['diff', '--raw', '-z', '--no-renames', '--abbrev=64', run.baseline.head, sha, '--']);
     if (parent !== run.baseline.head || diff !== expected) throw new Error('HEAD changed and does not match the pending implementation commit. Inspect Git history manually.');
@@ -568,7 +588,7 @@ export class ControlController {
     const digest = this.digest(run, current);
     const summary = finalSummary(run);
     const metadataNotice = `\nBacklog metadata will be committed after the implementation commit in a separate task-file-only commit: ${quote(run.task.lifecycle!.path)}. Terminal status: ${run.terminalStatus ?? 'Done'}.${Object.hasOwn(run.baseline.dirty, run.task.lifecycle!.path) ? ' This task file was already uncommitted at start; the metadata commit includes its full current contents.' : ''}`;
-    await this.confirmed(ctx, run.phase === 'WAIVED' ? `Commit ${run.task.id} WITH FAILED CHECKS?` : `Commit ${run.task.id}?`, `${run.phase}\n${run.waiver && run.phase === 'WAIVED' ? `Waiver reason: ${run.waiver.reason}\nFailed checks: ${run.waiver.failedCommands.join(', ')}\n` : ''}Acceptance review:\n${formatAcceptanceForConfirmation(run.acceptanceReview!)}\n\nImplementation paths:\n${implementationPaths.map(quote).join('\n')}${metadataNotice}\n\nFinal Backlog summary to write after commit:\n${summary}\n\nMessage: ${commitMessage}`);
+    await this.confirmed(ctx, run.phase === 'WAIVED' ? `Commit ${run.task.id} WITH FAILED CHECKS?` : `Commit ${run.task.id}?`, `${run.phase}\n${run.waiver && run.phase === 'WAIVED' ? `Waiver reason: ${run.waiver.reason}\nFailed checks: ${run.waiver.failedCommands.join(', ')}\n` : ''}Acceptance review:\n${formatAcceptanceForConfirmation(run.acceptanceReview!)}${run.acceptanceWaiver ? `\nHuman acceptance override: ${run.acceptanceWaiver.reason}\nWaived criteria: ${run.acceptanceWaiver.criteria.join(', ')}` : ''}\n\nImplementation paths:\n${implementationPaths.map(quote).join('\n')}${metadataNotice}\n\nFinal Backlog summary to write after commit:\n${summary}\n\nMessage: ${commitMessage}`);
     live();
     const afterConfirmation = await this.refresh(ctx);
     live();

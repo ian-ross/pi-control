@@ -31,6 +31,7 @@ export interface ImplementationRun {
   stateRevision?: number;
   latest?: VerificationResult;
   waiver?: { reason: string; timestamp: string; failedCommands: string[]; digest: string };
+  acceptanceWaiver?: { reason: string; timestamp: string; taskDigest: string; codeDigest: string; criteria: string[] };
   acceptanceRequest?: AcceptanceRequest;
   acceptanceReview?: AcceptanceReview;
   activeToolsBeforeAcceptance?: string[];
@@ -49,6 +50,7 @@ export function beginVerification(run: ImplementationRun): void {
   run.phase = 'VERIFYING';
   run.pendingAutomatic = false;
   delete run.waiver;
+  delete run.acceptanceWaiver;
   delete run.acceptanceRequest;
   delete run.acceptanceReview;
 }
@@ -72,6 +74,7 @@ export function resumeRun(run: ImplementationRun): void {
   run.pendingAutomatic = true;
   run.phase = 'IMPLEMENTING';
   delete run.waiver;
+  delete run.acceptanceWaiver;
   delete run.acceptanceRequest;
   delete run.acceptanceReview;
 }
@@ -80,6 +83,7 @@ export function staleRun(run: ImplementationRun): void {
   if (!run.implementationCommitSha) delete run.finalization;
   delete run.acceptanceRequest;
   delete run.acceptanceReview;
+  delete run.acceptanceWaiver;
 }
 export function addScope(run: ImplementationRun, entry: ScopeEntry): void {
   run.additions.push({ entry, timestamp: new Date().toISOString(), source: 'user' });
@@ -94,6 +98,19 @@ export function waiveRun(run: ImplementationRun, reason: string, digest: string)
   if (!failedCommands.length) throw new Error('No failed commands to waive.');
   run.waiver = { reason: reason.trim(), timestamp: new Date().toISOString(), failedCommands, digest };
   run.phase = 'WAIVED';
+  run.pendingAutomatic = false;
+}
+export function waiveAcceptanceRun(run: ImplementationRun, reason: string): void {
+  if (!reason.trim()) throw new Error('A non-empty acceptance waiver reason is required.');
+  const latest = run.latest;
+  const review = run.acceptanceReview;
+  if (!latest || !review || review.accepted) throw new Error('A current blocked acceptance review is required. Run /verify first.');
+  if (review.taskDigest !== stableDigest(run.task) || review.codeDigest !== latest.digest) throw new Error('Acceptance review is stale. Run /verify again.');
+  if (!latest.passed && run.waiver?.digest !== latest.digest) throw new Error('Acceptance can be waived only after verification passed or command failures were waived.');
+  const criteria = review.criteria.filter(criterion => criterion.status !== 'satisfied').map(criterion => criterion.id);
+  if (!criteria.length) throw new Error('No blocked acceptance criteria to waive.');
+  run.acceptanceWaiver = { reason: reason.trim(), timestamp: new Date().toISOString(), taskDigest: review.taskDigest, codeDigest: review.codeDigest, criteria };
+  run.phase = latest.passed ? 'VERIFIED' : 'WAIVED';
   run.pendingAutomatic = false;
 }
 export function serializeState(run: ImplementationRun | null): PersistedRunStateV2 {
@@ -131,6 +148,9 @@ function acceptanceReview(value: unknown): boolean {
     ids.add(criterion.id);
   }
   return ids.size === value.criteria.length && value.accepted === value.criteria.every(criterion => object(criterion) && criterion.status === 'satisfied');
+}
+function acceptanceWaiver(value: unknown): boolean {
+  return object(value) && nonempty(value.reason) && nonempty(value.timestamp) && digest(value.taskDigest) && digest(value.codeDigest) && strings(value.criteria) && value.criteria.length > 0 && new Set(value.criteria).size === value.criteria.length;
 }
 function verification(value: unknown): boolean {
   if (!object(value) || !digest(value.digest) || typeof value.scopeOk !== 'boolean' || typeof value.checksOk !== 'boolean' || typeof value.passed !== 'boolean' || !strings(value.scopeErrors) || !strings(value.errors) || !strings(value.changedPaths) || !nonempty(value.timestamp) || !Array.isArray(value.commands) || value.commands.length === 0) return false;
@@ -181,10 +201,12 @@ export function restoreState(data: unknown): ImplementationRun | null {
   if (r.originalScope.some(entry => !allowedScope.includes(entry.text))) throw invalid();
   if (r.latest !== undefined && (!verification(r.latest) || !object(r.latest) || !Array.isArray(r.latest.commands) || JSON.stringify(r.latest.commands.map(c => c.command)) !== JSON.stringify(t.verificationCommands))) throw invalid();
   if (r.waiver !== undefined && (!object(r.waiver) || !nonempty(r.waiver.reason) || !nonempty(r.waiver.timestamp) || !strings(r.waiver.failedCommands) || !r.waiver.failedCommands.length || !digest(r.waiver.digest))) throw invalid();
+  if (r.acceptanceWaiver !== undefined && !acceptanceWaiver(r.acceptanceWaiver)) throw invalid();
   if (r.acceptanceRequest !== undefined && !acceptanceRequest(r.acceptanceRequest)) throw invalid();
   if (r.acceptanceReview !== undefined && !acceptanceReview(r.acceptanceReview)) throw invalid();
   if (r.activeToolsBeforeAcceptance !== undefined && !toolNames(r.activeToolsBeforeAcceptance)) throw invalid();
   if (object(r.acceptanceReview) && object(r.latest) && (r.acceptanceReview.taskId !== t.id || r.acceptanceReview.codeDigest !== r.latest.digest)) throw invalid();
+  if (object(r.acceptanceWaiver) && (!object(r.acceptanceReview) || !object(r.latest) || r.acceptanceReview.accepted || r.acceptanceWaiver.taskDigest !== r.acceptanceReview.taskDigest || r.acceptanceWaiver.codeDigest !== r.acceptanceReview.codeDigest)) throw invalid();
   if (r.implementationCommitSha !== undefined && (typeof r.implementationCommitSha !== 'string' || !/^[a-f0-9]{40,64}$/.test(r.implementationCommitSha))) throw invalid();
   if (r.metadataCommitSha !== undefined && (typeof r.metadataCommitSha !== 'string' || !/^[a-f0-9]{40,64}$/.test(r.metadataCommitSha))) throw invalid();
   if (r.phase === 'VERIFIED' && (!object(r.latest) || r.latest.passed !== true)) throw invalid();
@@ -205,7 +227,12 @@ export function restoreState(data: unknown): ImplementationRun | null {
       }
     } catch { throw invalid(); }
   }
-  if (run.phase === 'FINALIZING' && (!run.finalization || !run.acceptanceReview?.accepted || !run.latest || (!run.latest.passed && run.waiver?.digest !== run.latest.digest))) throw invalid();
+  if (run.acceptanceWaiver) {
+    const blocked = new Set(run.acceptanceReview!.criteria.filter(c => c.status !== 'satisfied').map(c => c.id));
+    if (!run.acceptanceWaiver.criteria.every(id => blocked.has(id)) || run.acceptanceWaiver.criteria.length !== blocked.size) throw invalid();
+  }
+  const acceptanceComplete = run.acceptanceReview?.accepted || !!run.acceptanceWaiver;
+  if (run.phase === 'FINALIZING' && (!run.finalization || !acceptanceComplete || !run.latest || (!run.latest.passed && run.waiver?.digest !== run.latest.digest))) throw invalid();
   if (run.finalization && ['FINALIZING', 'COMMITTED'].includes(run.phase) && (run.finalization.summary !== finalSummary(run) || stableDigest(run.finalization.checkedIndexes) !== stableDigest(satisfiedCriterionIndexes(run)))) throw invalid();
   if (run.finalization && run.finalization.checkedIndexes.some(i => !run.task.acceptanceCriteriaState?.some(c => c.index === i && !c.checked))) throw invalid();
   run.artifactPolicy ??= { untrackedArtifacts: [] };

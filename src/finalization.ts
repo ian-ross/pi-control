@@ -22,8 +22,9 @@ export interface FinalizationState {
 type Exec = ExtensionAPI['exec'];
 
 export function satisfiedCriterionIndexes(run: ImplementationRun): number[] {
-  const satisfied = new Set(run.acceptanceReview?.criteria.filter(c => c.status === 'satisfied').map(c => c.id));
-  return criteriaForTask(run.task).filter(c => satisfied.has(c.id) && !c.checked).map(c => c.index);
+  const accepted = new Set(run.acceptanceReview?.criteria.filter(c => c.status === 'satisfied').map(c => c.id));
+  for (const id of run.acceptanceWaiver?.criteria ?? []) accepted.add(id);
+  return criteriaForTask(run.task).filter(c => accepted.has(c.id) && !c.checked).map(c => c.index);
 }
 
 export function finalSummary(run: ImplementationRun): string {
@@ -32,6 +33,7 @@ export function finalSummary(run: ImplementationRun): string {
     lines.push(`- Criterion ${criterion.id}: ${criterion.status}. ${criterion.evidence.join('; ')}`);
   }
   if (run.waiver) lines.push('', `Waived verification failures: ${run.waiver.reason}`, ...run.waiver.failedCommands.map(command => `- ${command}`));
+  if (run.acceptanceWaiver) lines.push('', `Human acceptance override: ${run.acceptanceWaiver.reason}`, `Waived criteria: ${run.acceptanceWaiver.criteria.join(', ')}`);
   return lines.join('\n');
 }
 

@@ -35,6 +35,7 @@ const commands: Record<string, string> = {
   'implement-resume': 'Resume a failed or restored task with a fresh repair budget',
   verify: 'Verify the active task without automatic repair',
   'verify-waive': 'Confirm a reasoned waiver of current failed command checks',
+  'acceptance-waive': 'Confirm a reasoned human override for blocked acceptance criteria',
   'scope-show': 'Show original task scope and user additions',
   'scope-add': 'Confirm one run-local scope addition',
   'control-status': 'Show active workflow state and verification freshness',
