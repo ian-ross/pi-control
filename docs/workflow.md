@@ -44,7 +44,7 @@ At `/implement` start, or during `/implement-resume <task-id> --baseline <commit
 - Dirty outside-scope fingerprints.
 - Index state.
 
-Normal `/implement` refuses to start if anything is staged. It also refuses if any pre-existing dirty tracked or untracked path matches the task scope. Explicit-baseline resume is for a lost controller state after work already began, so it reconstructs a clean baseline from the commit instead of treating current changes as pre-existing dirt.
+Normal `/implement` refuses to start if anything is staged. It also refuses if any pre-existing dirty tracked or untracked path matches the task scope. The active Backlog task file must already be committed, even when it is outside scope. Explicit-baseline resume is for a lost controller state after work already began, so it reconstructs a clean baseline from the commit instead of treating current changes as pre-existing dirt.
 
 Dirty files outside the task scope may exist at start, but they must stay byte-for-byte and metadata equivalent. The only exception is the active Backlog task file changed by the controller's claim operation. Its post-claim content and mode must remain exact. Other changes fail verification.
 

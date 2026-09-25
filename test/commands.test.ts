@@ -350,22 +350,31 @@ test('claim metadata is verified even under broad product scope and cannot be wa
 });
 
 test('commit includes the exact claimed task file and preserves other dirty Backlog files', async t => {
+  const h = await setup(t, 'true');
+  await writeFile(join(h.root, 'backlog/other.md'), 'unrelated task');
+  await h.command('implement', 'TASK-1');
+  await writeFile(join(h.root, 'allowed'), 'work');
+  await h.command('verify');
+  assert.equal(h.controller.run?.phase, 'VERIFIED', h.notices.join('\n'));
+  assert.deepEqual(h.controller.run?.latest?.changedPaths.sort(), ['allowed', h.task.lifecycle!.path].sort());
+  await h.command('commit', 'TASK-1');
+  assert.equal(h.controller.run?.phase, 'COMMITTED', h.notices.join('\n'));
+  assert.match(await h.git('status', '--porcelain'), /backlog\/other.md/);
+  assert.doesNotMatch(await h.git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), /other.md/);
+  assert.doesNotMatch(h.confirmations.at(-1)!, /already uncommitted/);
+});
+
+test('implement refuses dirty or untracked active task files', async t => {
   for (const tracked of [true, false]) {
     const h = await setup(t, 'true', tracked);
     h.task.description = 'Pre-existing task detail to preserve';
     await h.saveTask();
-    await writeFile(join(h.root, 'backlog/other.md'), 'unrelated task');
     await h.command('implement', 'TASK-1');
-    await writeFile(join(h.root, 'allowed'), 'work');
-    await h.command('verify');
-    assert.equal(h.controller.run?.phase, 'VERIFIED', h.notices.join('\n'));
-    assert.deepEqual(h.controller.run?.latest?.changedPaths.sort(), ['allowed', h.task.lifecycle!.path].sort());
-    await h.command('commit', 'TASK-1');
-    assert.equal(h.controller.run?.phase, 'COMMITTED', h.notices.join('\n'));
-    assert.match(await h.git('show', `HEAD:${h.task.lifecycle!.path}`), /Pre-existing task detail to preserve/);
-    assert.match(await h.git('status', '--porcelain'), /backlog\/other.md/);
-    assert.doesNotMatch(await h.git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), /other.md/);
-    assert.match(h.confirmations.at(-1)!, /already uncommitted/);
+    assert.equal(h.controller.run, null);
+    assert.equal(h.messages.length, 0);
+    assert.equal(h.task.lifecycle!.status, 'To Do');
+    assert.match(h.notices.at(-1)!, /task file.*commit|uncommitted changes/i);
+    assert.ok(!h.calls.some(c => c[0] === 'backlog' && c[2] === 'edit'));
   }
 });
 

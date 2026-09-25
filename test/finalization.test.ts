@@ -11,7 +11,7 @@ import { restoreState, serializeState } from '../src/state.js';
 import { makeTempRepo } from './helpers.js';
 
 const exec = promisify(execFile);
-async function setup(t: TestContext, artifacts = false, alreadyClaimedDirty = false) {
+async function setup(t: TestContext, artifacts = false) {
   const repo = await makeTempRepo();
   t.after(() => repo.cleanup());
   const path = 'backlog/tasks/task-1.md';
@@ -21,11 +21,6 @@ async function setup(t: TestContext, artifacts = false, alreadyClaimedDirty = fa
   await repo.write('.pi/pi-control.json', JSON.stringify({ terminalStatus: 'Closed', untrackedArtifacts: artifacts ? ['cache/**'] : [] }));
   await repo.commitAll();
   const initialHead = (await repo.git(['rev-parse', 'HEAD'])).trim();
-  if (alreadyClaimedDirty) {
-    task.lifecycle!.status = 'In Progress'; task.lifecycle!.assignees = ['@pi-control'];
-    task.description = 'Pre-existing human task definition.';
-    await save();
-  }
   const notices: string[] = [], confirmations: string[] = [], prompts: string[] = [];
   let finalEdits = 0;
   let failBefore = false, failAfter = false, extraTaskEdit = false, implementationReportFailure = false;
@@ -87,12 +82,11 @@ test('frozen artifact policy survives restore and commit excludes matching cache
   assert.throws(() => restoreState(forged), /Invalid/);
 });
 
-test('metadata confirmation discloses pre-existing task changes even when no claim write was needed', async t => {
-  const h = await setup(t, false, true);
+test('metadata confirmation does not mention pre-existing task dirt', async t => {
+  const h = await setup(t);
   await h.commit();
   assert.equal(h.controller.run!.phase, 'COMMITTED', h.notices.join('\n'));
-  assert.match(h.confirmations[0], /already uncommitted at start/);
-  assert.match(await h.repo.git(['show', `HEAD:${h.path}`]), /Pre-existing human task definition/);
+  assert.doesNotMatch(h.confirmations[0], /already uncommitted at start/);
   assert.equal(await h.count(), 2);
 });
 

@@ -138,10 +138,10 @@ automatically. You can also [create compatible tasks manually](docs/backlog-task
 
 ### Implement a task
 
-Before starting, make sure nothing is staged and no files in the task's scope
-have uncommitted changes. Existing changes outside scope may remain, but must
-stay unchanged during the run. Do not run another writer against the same
-worktree or task.
+Before starting, make sure nothing is staged, the active Backlog task file is
+committed, and no files in the task's scope have uncommitted changes. Existing
+changes outside scope may remain, but must stay unchanged during the run. Do not
+run another writer against the same worktree or task.
 
 ```text
 /implement BACK-123

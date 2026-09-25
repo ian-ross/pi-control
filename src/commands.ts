@@ -304,8 +304,9 @@ export class ControlController {
     const scope = await compileScope(root, task.allowedScope);
     const artifactPolicy = await compileArtifactPolicy(root, this.config.untrackedArtifacts);
     const baseline = await captureBaseline(root, scope, artifactPolicy);
-    const before = baseline.dirty[lifecycle.path] ?? baseline.tracked[lifecycle.path];
-    if (!before || before.kind !== 'file') throw new Error('Backlog task file must be a Git-visible regular file. Remove its ignore rule or track it before /implement.');
+    if (Object.hasOwn(baseline.dirty, lifecycle.path)) throw new Error('Backlog task file has uncommitted changes. Commit or revert it before /implement.');
+    const before = baseline.tracked[lifecycle.path];
+    if (!before || before.kind !== 'file') throw new Error('Backlog task file must be a committed Git-visible regular file. Remove its ignore rule or commit it before /implement.');
     if (generation !== this.generation) throw new Error('Session changed before the task could be claimed.');
     const run = createRun(task, baseline, scope, this.config.maxRepairAttempts);
     run.artifactPolicy = structuredClone(artifactPolicy);
@@ -587,7 +588,7 @@ export class ControlController {
     const implementationPaths = paths.filter(p => !Object.hasOwn(run.managedFiles ?? {}, p));
     const digest = this.digest(run, current);
     const summary = finalSummary(run);
-    const metadataNotice = `\nBacklog metadata will be committed after the implementation commit in a separate task-file-only commit: ${quote(run.task.lifecycle!.path)}. Terminal status: ${run.terminalStatus ?? 'Done'}.${Object.hasOwn(run.baseline.dirty, run.task.lifecycle!.path) ? ' This task file was already uncommitted at start; the metadata commit includes its full current contents.' : ''}`;
+    const metadataNotice = `\nBacklog metadata will be committed after the implementation commit in a separate task-file-only commit: ${quote(run.task.lifecycle!.path)}. Terminal status: ${run.terminalStatus ?? 'Done'}.`;
     await this.confirmed(ctx, run.phase === 'WAIVED' ? `Commit ${run.task.id} WITH FAILED CHECKS?` : `Commit ${run.task.id}?`, `${run.phase}\n${run.waiver && run.phase === 'WAIVED' ? `Waiver reason: ${run.waiver.reason}\nFailed checks: ${run.waiver.failedCommands.join(', ')}\n` : ''}Acceptance review:\n${formatAcceptanceForConfirmation(run.acceptanceReview!)}${run.acceptanceWaiver ? `\nHuman acceptance override: ${run.acceptanceWaiver.reason}\nWaived criteria: ${run.acceptanceWaiver.criteria.join(', ')}` : ''}\n\nImplementation paths:\n${implementationPaths.map(quote).join('\n')}${metadataNotice}\n\nFinal Backlog summary to write after commit:\n${summary}\n\nMessage: ${commitMessage}`);
     live();
     const afterConfirmation = await this.refresh(ctx);
