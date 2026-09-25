@@ -265,6 +265,23 @@ export function ensureAcceptanceCriteriaState(task: ControlTask): ControlTask {
   return task;
 }
 
+export function taskDefinitionDigest(task: ControlTask): string {
+  const criteria = ensureAcceptanceCriteriaState(structuredClone(task)).acceptanceCriteriaState!.map(criterion => ({
+    id: criterion.id,
+    index: criterion.index,
+    text: criterion.text,
+  }));
+  return stableDigest({
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    implementationPlan: task.implementationPlan,
+    allowedScope: task.allowedScope,
+    verificationCommands: task.verificationCommands,
+    acceptanceCriteria: criteria,
+  });
+}
+
 export function normalizeTask(raw: unknown): ControlTask {
   const envelope = parseRawTask(raw);
   if (!isRecord(envelope)) {
@@ -350,10 +367,10 @@ export async function claimTask(root: string, task: ControlTask, settings: Claim
     throw new BacklogTaskError('backlog-config', 'BACKLOG_CWD does not match the captured project root. Unset it or point it at this repository before claiming a task.');
   }
   const reread = await loadTask(root, task.id, exec);
-  if (stableDigest(reread) !== stableDigest(task)) {
+  if (taskDefinitionDigest(reread) !== taskDefinitionDigest(task) || reread.lifecycle?.path !== task.lifecycle?.path) {
     throw new BacklogTaskError(
       "claim-conflict",
-      `Backlog task ${task.id} changed before claim. Refusing to overwrite changed definition or ownership.`,
+      `Backlog task ${task.id} changed before claim. Refusing to overwrite changed definition or task path.`,
     );
   }
 
@@ -395,7 +412,7 @@ export async function claimTask(root: string, task: ControlTask, settings: Claim
       `Backlog task ${id} claim read-back mismatch. Expected status ${JSON.stringify(claim.inProgressStatus)} and assignee ${JSON.stringify(claim.claimAssignee)}, got status ${JSON.stringify(claimedLifecycle.status)} and assignees ${JSON.stringify(claimedLifecycle.assignees)}. The task may have been partially written; no implementation was dispatched.`,
     );
   }
-  if (definitionDigest(claimed) !== definitionDigest(reread)) {
+  if (taskDefinitionDigest(claimed) !== taskDefinitionDigest(reread)) {
     throw new BacklogTaskError(
       "claim-conflict",
       `Backlog task ${id} changed outside lifecycle status or assignees during claim. The task may have been partially written; no implementation was dispatched.`,
@@ -468,11 +485,6 @@ function hasExpectedClaim(lifecycle: TaskLifecycle, settings: ClaimSettings): bo
   return statusKey(lifecycle.status) === statusKey(settings.inProgressStatus)
     && lifecycle.assignees.length === 1
     && lifecycle.assignees[0] === settings.claimAssignee;
-}
-
-function definitionDigest(task: ControlTask): string {
-  const lifecycle = task.lifecycle ? { path: task.lifecycle.path } : undefined;
-  return stableDigest({ ...task, lifecycle });
 }
 
 function validateRequestedTaskId(id: string): string {

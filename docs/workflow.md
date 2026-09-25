@@ -77,7 +77,7 @@ Commands run sequentially from the captured repository root through the configur
 
 `Verification:` command text is trusted project configuration from approved Backlog tasks. It is passed as raw shell source. Do not put unreviewed task text there. These commands should be checks, not mutators. If they change Git-visible content, verification fails with `verification-mutated-worktree`.
 
-A `VERIFIED` or `WAIVED` result is bound to a digest of the task, scope, commands, frozen artifact policy, changed paths, and content fingerprints. Any relevant change makes it `STALE`. Staging identical verified content does not by itself change the content digest, but index invariants are still checked.
+A `VERIFIED` or `WAIVED` result is bound to the task definition, scope, commands, frozen artifact policy, changed paths, and content fingerprints. The task definition includes title, description, implementation plan, allowed scope, verification commands, and acceptance criteria text and identifiers. Status, assignees, final summary, and existing checkmarks do not count as definition changes. Any relevant change makes the result `STALE`. Staging identical verified content does not by itself change the content digest, but index invariants are still checked.
 
 ## Acceptance review
 
@@ -85,7 +85,7 @@ Mechanical verification and acceptance review are separate. After successful che
 
 The reviewer assesses every criterion as `satisfied`, `unsatisfied`, or `uncertain` and supplies evidence plus a proposed final summary. Missing, malformed, unsatisfied, or uncertain results block completion. Review cannot override scope failures or turn failed commands into a pass.
 
-The assessment binds to the checked task definition and code digest. Changing either invalidates it. Existing human checkmarks remain intact but do not count as review evidence. The controller writes no automated checkmarks before commit, so a stale assessment cannot leave new checkmarks behind.
+The assessment binds to the checked task definition and code digest. Changing either invalidates it. Existing human checkmarks remain intact but do not count as review evidence or task definition changes. The controller writes no automated checkmarks before commit, so a stale assessment cannot leave new checkmarks behind.
 
 Commit confirmation shows the assessment, evidence, and proposed final summary. Known command failures and their waiver reason appear in the final summary. A blocked acceptance review pauses the run as `FAILED`; use `/implement-resume` to repair it, or `/acceptance-waive <task-id> <reason>` when a human accepts the blocked criteria. A malformed response stays unaccepted. Use `/verify` to request a fresh review after interruption or restoration.
 

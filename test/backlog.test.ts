@@ -11,6 +11,7 @@ import {
   loadTask,
   normalizeTask,
   requireAutoCommitDisabled,
+  taskDefinitionDigest,
   type BacklogExec,
   type ClaimSettings,
 } from "../src/backlog.ts";
@@ -58,6 +59,24 @@ test('acceptance identifiers and indexes must be unique and well-formed', async 
   assert.equal(task.acceptanceCriteriaState![0].id, 'criterion-one');
   assert.equal(task.acceptanceCriteriaState![0].checked, true);
   assert.equal(task.finalSummary, 'Human summary');
+});
+
+test('taskDefinitionDigest ignores workflow metadata but keeps the task contract', async () => {
+  const task = normalizeTask(await fixture('backlog-1.52.0-task-view-valid.json'));
+  const sameDefinition = structuredClone(task);
+  sameDefinition.lifecycle!.status = 'In Progress';
+  sameDefinition.lifecycle!.assignees = ['@pi-control'];
+  sameDefinition.acceptanceCriteriaState![0].checked = true;
+  sameDefinition.finalSummary = 'Human summary';
+  assert.equal(taskDefinitionDigest(sameDefinition), taskDefinitionDigest(task));
+
+  const changedPlan = structuredClone(task);
+  changedPlan.implementationPlan = `${changedPlan.implementationPlan}\n5. Extra step.`;
+  assert.notEqual(taskDefinitionDigest(changedPlan), taskDefinitionDigest(task));
+
+  const changedCriterion = structuredClone(task);
+  changedCriterion.acceptanceCriteriaState![0].text = 'Parses all input';
+  assert.notEqual(taskDefinitionDigest(changedCriterion), taskDefinitionDigest(task));
 });
 
 test("normalizeTask maps Backlog 1.52.0 task-view JSON", async () => {

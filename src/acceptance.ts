@@ -1,5 +1,4 @@
-import { stableDigest } from './digest.js';
-import type { ControlTask, AcceptanceCriterion } from './backlog.js';
+import { taskDefinitionDigest, type ControlTask, type AcceptanceCriterion } from './backlog.js';
 import type { ImplementationRun } from './state.js';
 import type { VerificationResult } from './verification.js';
 
@@ -62,7 +61,7 @@ function onlyKeys(value: Record<string, unknown>, keys: string[], field: string)
 }
 
 export function taskDigest(task: ControlTask): string {
-  return stableDigest(task);
+  return taskDefinitionDigest(task);
 }
 
 export function criteriaForTask(task: ControlTask): AcceptanceCriterion[] {

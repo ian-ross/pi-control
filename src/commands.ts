@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { loadTask, requireAutoCommitDisabled, assertClaimable, claimTask, ensureAcceptanceCriteriaState, type ControlTask } from './backlog.js';
+import { loadTask, requireAutoCommitDisabled, assertClaimable, claimTask, ensureAcceptanceCriteriaState, taskDefinitionDigest, type ControlTask } from './backlog.js';
 import { prepareCommitGuard } from './commit-guard.js';
 import { defaults, loadConfig, type PiControlConfig } from './config.js';
 import { findRoot, captureBaseline, captureBaselineFromCommit, inspectRun, fingerprintPath, git, resolveCommit, type Inspection } from './git.js';
@@ -262,7 +262,7 @@ export class ControlController {
   }
   private async taskUnchanged(run: ImplementationRun): Promise<void> {
     const task = ensureAcceptanceCriteriaState(await this.taskLoader(run.baseline.root, run.task.id, this.pi.exec.bind(this.pi)));
-    if (stableDigest(task) !== stableDigest(run.task)) throw new Error('Backlog task definition changed. Restore it or /control-abort and start /implement again.');
+    if (taskDefinitionDigest(task) !== taskDefinitionDigest(run.task)) throw new Error('Backlog task definition changed. Restore it or /control-abort and start /implement again.');
   }
   private async restoreNotesAllowance(run: ImplementationRun): Promise<boolean> {
     const path = run.task.lifecycle?.path;

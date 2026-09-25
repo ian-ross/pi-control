@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import picomatch from 'picomatch';
 import type { ControlTask, AcceptanceCriterion } from './backlog.js';
-import { buildAcceptanceRequest, validateAcceptanceAssessment, type AcceptanceReview, type AcceptanceRequest } from './acceptance.js';
+import { buildAcceptanceRequest, validateAcceptanceAssessment, taskDigest, type AcceptanceReview, type AcceptanceRequest } from './acceptance.js';
 import { validateArtifactPolicy, type ArtifactPolicy } from './artifacts.js';
 import { finalSummary, satisfiedCriterionIndexes, type FinalizationState } from './finalization.js';
 import { stableDigest } from './digest.js';
@@ -105,7 +105,7 @@ export function waiveAcceptanceRun(run: ImplementationRun, reason: string): void
   const latest = run.latest;
   const review = run.acceptanceReview;
   if (!latest || !review || review.accepted) throw new Error('A current blocked acceptance review is required. Run /verify first.');
-  if (review.taskDigest !== stableDigest(run.task) || review.codeDigest !== latest.digest) throw new Error('Acceptance review is stale. Run /verify again.');
+  if (review.taskDigest !== taskDigest(run.task) || review.codeDigest !== latest.digest) throw new Error('Acceptance review is stale. Run /verify again.');
   if (!latest.passed && run.waiver?.digest !== latest.digest) throw new Error('Acceptance can be waived only after verification passed or command failures were waived.');
   const criteria = review.criteria.filter(criterion => criterion.status !== 'satisfied').map(criterion => criterion.id);
   if (!criteria.length) throw new Error('No blocked acceptance criteria to waive.');

@@ -51,7 +51,7 @@ Check that `task.implementationPlan` contains the saved instructions. Backlog 1.
 
 Users do not author JSON by hand. The JSON shape is the CLI contract that `pi-control` reads.
 
-`/implement` rejects missing, blank, or malformed plans. It includes the full saved plan in implementation, resume, and repair prompts. Plan changes count as task-definition changes and invalidate an existing pass or waiver when rechecked.
+`/implement` rejects missing, blank, or malformed plans. It includes the full saved plan in implementation, resume, and repair prompts. Plan changes count as task-definition changes and invalidate an existing pass or waiver when rechecked. Status, assignees, final summary, and existing acceptance checkmarks do not count as task-definition changes.
 
 For tasks generated before this requirement, use the approved parent plan to populate the field with `backlog task edit <id> --plan <text>` and read it back. Do not use a placeholder merely to pass validation. Abort an active run before changing its task definition, then start a new run. Reload the extension and skill after updating this package.
 
